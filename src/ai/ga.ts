@@ -24,16 +24,20 @@ export function initPopulation(n: number, rng: Rng): Float64Array[] {
 }
 
 /**
- * One GA step, reproducing the Unity original's *effective* behavior:
- * sort by fitness desc; best 2 pass through unmodified; the rest of the population
- * is filled with clones of the best two, then mutated per-param with prob 0.3 by a
- * uniform amount in ±2.0.
+ * One GA step, reproducing the Unity original's *effective* behavior
+ * (EvolutionManager.cs:106-119 wiring: DefaultSelectionOperator + RandomRecombination
+ * + MutateAllButBestTwo):
+ * - slots 0,1: the best two genomes, unmodified (RandomRecombination adds
+ *   intermediate[0]/[1] verbatim and mutation skips them),
+ * - the rest: clones of parents drawn at random from the top THREE
+ *   (RandomRecombination picks two distinct random parents from the intermediate
+ *   population = top 3; Unity's crossover is a no-op by accident —
+ *   `randomizer.Next() < 0.6` compares a non-negative int against 0.6 — so each
+ *   offspring is simply a clone of one parent),
+ * - then all clones are mutated per-param with prob 0.3 by a uniform amount in ±2.0.
  *
- * Unity's crossover is a no-op by accident (`randomizer.Next() < 0.6` compares a
- * non-negative int against 0.6), so offspring there are always clones of the top 2.
- * That is what makes the original converge so fast — it is effectively a mutation-only
- * (2, N-2) evolution strategy. We previously "fixed" the crossover and training got
- * much slower, so the no-op is reproduced deliberately. Do not "fix" this.
+ * Drawing parents from the top 3 (not just the top 2) is what keeps enough diversity
+ * to escape local optima; an earlier version that cloned only the top 2 stalled more.
  */
 export function nextGeneration(
   population: Float64Array[],
@@ -42,11 +46,15 @@ export function nextGeneration(
 ): Float64Array[] {
   const n = population.length;
   const order = population.map((_, i) => i).sort((a, b) => fitnesses[b] - fitnesses[a]);
+  const intermediate = order.slice(0, 3);
 
   const next: Float64Array[] = [population[order[0]].slice(), population[order[1]].slice()];
   while (next.length < n) {
-    next.push(population[order[0]].slice());
-    if (next.length < n) next.push(population[order[1]].slice());
+    const i1 = Math.floor(rng() * intermediate.length);
+    let i2 = Math.floor(rng() * intermediate.length);
+    while (i2 === i1) i2 = Math.floor(rng() * intermediate.length);
+    next.push(population[intermediate[i1]].slice());
+    if (next.length < n) next.push(population[intermediate[i2]].slice());
   }
 
   // Mutate all but the best two.

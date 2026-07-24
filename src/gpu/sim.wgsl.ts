@@ -52,8 +52,11 @@ const MAX_CHECKPOINT_DELAY = 7.0;
 
 const SENSOR_MAX_DIST = 10.0;
 const SENSOR_MIN_DIST = 0.01;
-// ±45°, ±atan(2.7/7.2) ≈ ±20.56°, 0° in radians.
+// Sensor angles relative to forward and car-local origins (x=right, y=forward),
+// matching Car.prefab (local (±0.3,0.27),(±0.3,0.42),(0,0.42), car scale (1,2))
+// and Unity's hierarchy order (right side first). Mirror of car.ts.
 const SENSOR_ANGLES = array<f32, 5>(-0.7853981633974483, -0.3587706702705722, 0.0, 0.3587706702705722, 0.7853981633974483);
+const SENSOR_ORIGINS = array<vec2f, 5>(vec2f(0.3, 0.54), vec2f(0.3, 0.84), vec2f(0.0, 0.84), vec2f(-0.3, 0.84), vec2f(-0.3, 0.54));
 
 const CAPTURE_RADIUS = 3.0;
 // ponytail: point car with half-width; Unity used a 1x2 box collider.
@@ -91,18 +94,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var car = cars[i];
   if (car.alive == 0u) { return; }
 
-  // 5 sensor raycasts, raw distances (not normalized).
+  // 5 sensor raycasts, raw distances (not normalized), from front-mounted origins.
   let rad = car.angle * DEG2RAD;
   let fwd = vec2f(-sin(rad), cos(rad));
+  let right = vec2f(cos(rad), sin(rad));
   var cur: array<f32, 5>;
   for (var s = 0u; s < 5u; s++) {
     let ca = cos(SENSOR_ANGLES[s]);
     let sa = sin(SENSOR_ANGLES[s]);
     let dir = vec2f(fwd.x * ca - fwd.y * sa, fwd.x * sa + fwd.y * ca);
+    let origin = car.pos + right * SENSOR_ORIGINS[s].x + fwd * SENSOR_ORIGINS[s].y;
     var best = SENSOR_MAX_DIST;
     for (var w = 0u; w < params.wallCount; w++) {
       let wall = walls[w];
-      let t = raySegment(car.pos, dir, wall.xy, wall.zw);
+      let t = raySegment(origin, dir, wall.xy, wall.zw);
       if (t >= 0.0 && t < best) { best = t; }
     }
     let dist = max(best, SENSOR_MIN_DIST);

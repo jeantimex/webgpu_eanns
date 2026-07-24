@@ -35,8 +35,8 @@ A genome is the network's 47 weights laid out flat. One generation:
    credit).
 3. The CPU genetic algorithm builds the next generation, reproducing the Unity original's
    *effective* behavior: the best 2 genomes pass through unmodified, the rest of the
-   population is filled with clones of the best two, then each clone is mutated per-parameter
-   with probability 0.3 by a uniform amount in ±2.0.
+   population is filled with clones of parents drawn at random from the top 3, then each
+   clone is mutated per-parameter with probability 0.3 by a uniform amount in ±2.0.
 
 > Note: Unity's crossover operator is accidentally a no-op (`Random.Next() < 0.6` compares a
 > non-negative `int` against `0.6`), which is what makes the original converge so fast — it

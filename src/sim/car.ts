@@ -14,9 +14,20 @@ const MAX_CHECKPOINT_DELAY = 7; // seconds without a checkpoint before death
 
 const SENSOR_MAX_DIST = 10;
 const SENSOR_MIN_DIST = 0.01;
-// Sensor angles relative to forward: ±45°, ±atan(2.7/7.2) ≈ ±20.56°, 0°, in radians.
+// Sensor angles relative to forward and car-local origins (x=right, y=forward),
+// from Car.prefab: sensors at local (±0.3,0.27),(±0.3,0.42),(0,0.42) under car scale
+// (1,2) → y doubled. Order matches Unity's hierarchy (GetComponentsInChildren):
+// right side first → [−45°, −atan(2.7/7.2)≈−20.56°, 0°, +20.56°, +45°] in our
+// CCW-positive convention — Unity-trained genomes depend on the pairing.
 const SENSOR_HALF_ANGLE = Math.atan(2.7 / 7.2);
 export const SENSOR_ANGLES = [-Math.PI / 4, -SENSOR_HALF_ANGLE, 0, SENSOR_HALF_ANGLE, Math.PI / 4];
+export const SENSOR_ORIGINS = [
+  [0.3, 0.54],
+  [0.3, 0.84],
+  [0, 0.84],
+  [-0.3, 0.84],
+  [-0.3, 0.54],
+];
 
 // ponytail: car approximated as a point that dies within half-width of a wall;
 // Unity used a 1x2 box collider (Car.prefab: 1x1 collider, transform scale (1,2)).
@@ -80,15 +91,20 @@ export function sense(walls: Float32Array, x: number, y: number, angleDeg: numbe
   const rad = angleDeg * DEG2RAD;
   const fx = -Math.sin(rad);
   const fy = Math.cos(rad);
+  const rx = Math.cos(rad);
+  const ry = Math.sin(rad);
   const out = new Array<number>(5);
   for (let s = 0; s < 5; s++) {
     const ca = Math.cos(SENSOR_ANGLES[s]);
     const sa = Math.sin(SENSOR_ANGLES[s]);
     const dx = fx * ca - fy * sa;
     const dy = fx * sa + fy * ca;
+    // Raycast from the sensor's front-mounted origin, not the car center (Sensor.cs:51).
+    const ox = x + rx * SENSOR_ORIGINS[s][0] + fx * SENSOR_ORIGINS[s][1];
+    const oy = y + ry * SENSOR_ORIGINS[s][0] + fy * SENSOR_ORIGINS[s][1];
     let best = SENSOR_MAX_DIST;
     for (let w = 0; w < walls.length; w += 4) {
-      const t = raySegment(x, y, dx, dy, walls[w], walls[w + 1], walls[w + 2], walls[w + 3]);
+      const t = raySegment(ox, oy, dx, dy, walls[w], walls[w + 1], walls[w + 2], walls[w + 3]);
       if (t >= 0 && t < best) best = t;
     }
     out[s] = f32(Math.max(best, SENSOR_MIN_DIST));

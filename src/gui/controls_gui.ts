@@ -8,6 +8,11 @@ const MODE_KEY = 'eanns:mode';
 const TRACK_KEY = 'eanns:track';
 const POPULATION_KEY = 'eanns:population';
 
+/** Persist mode without a reload (main uses it for the no-model fallback). */
+export function persistMode(mode: 'Train' | 'Test'): void {
+  localStorage.setItem(MODE_KEY, mode);
+}
+
 export interface Settings {
   mode: 'Train' | 'Test';
   track: string;

@@ -30,6 +30,7 @@ struct CarState {
 
 const DEG2RAD = 0.017453292519943295;
 const SENSOR_ANGLES = array<f32, 5>(-0.7853981633974483, -0.3587706702705722, 0.0, 0.3587706702705722, 0.7853981633974483);
+const SENSOR_ORIGINS = array<vec2f, 5>(vec2f(0.3, 0.54), vec2f(0.3, 0.84), vec2f(0.0, 0.84), vec2f(-0.3, 0.84), vec2f(-0.3, 0.54));
 const QUAD = array<vec2f, 6>(
   vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
   vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
@@ -98,7 +99,9 @@ fn vertexMain(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
       let ca = cos(SENSOR_ANGLES[si]);
       let sa = sin(SENSOR_ANGLES[si]);
       let dir = vec2f(fwd.x * ca - fwd.y * sa, fwd.x * sa + fwd.y * ca);
-      let hit = car.pos + dir * sensors[ci * 5u + si];
+      let right = vec2f(cos(a), sin(a));
+      let origin = car.pos + right * SENSOR_ORIGINS[si].x + fwd * SENSOR_ORIGINS[si].y;
+      let hit = origin + dir * sensors[ci * 5u + si];
       let rot = select(0.7853981633974483, -0.7853981633974483, vi < 6u);
       let sd = vec2f(cos(rot), sin(rot));
       let sn = vec2f(-sd.y, sd.x);

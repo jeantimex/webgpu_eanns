@@ -2,7 +2,7 @@ import './style.css';
 import { loadSavedBest, loadTestModel, saveModel } from './ai/model';
 import { runSelftest } from './ai/selftest';
 import { Evolution, type BestCarSnapshot } from './gpu/evolution';
-import { currentSettings, setupControls } from './gui/controls_gui';
+import { currentSettings, persistMode, setupControls } from './gui/controls_gui';
 import { Renderer } from './renderer/renderer';
 import { loadTrack } from './sim/track';
 import { Hud } from './ui/hud';
@@ -35,13 +35,21 @@ async function main(): Promise<void> {
   }
 
   const settings = currentSettings();
-  const isTest = settings.mode === 'Test';
+  let isTest = settings.mode === 'Test';
+  let noModelWarning = false;
+  // Test mode without a model used to throw here — and since mode is persisted,
+  // the app could never boot again to let the user switch back. Fall back to Train.
+  if (isTest && !loadTestModel()) {
+    isTest = false;
+    noModelWarning = true;
+    persistMode('Train');
+  }
   const track = await loadTrack(`/tracks/${settings.track}.json`);
   const evolution = Evolution.init(gpu.device, track, isTest ? 1 : settings.population, 1);
-  if (isTest) {
-    const weights = loadTestModel();
-    if (!weights) throw new Error('Test mode needs a model: switch to Train and use "Load model file" first.');
-    evolution.injectBest(weights);
+  if (isTest) evolution.injectBest(loadTestModel()!);
+  if (noModelWarning) {
+    showMessage('Test mode needs a model — starting in Train mode. Use "Load model file" to test one.');
+    setTimeout(() => message.classList.remove('visible'), 6000);
   }
 
   const renderer = new Renderer(canvas, gpu, track, evolution.simBuffers);
