@@ -1,0 +1,14 @@
+import { resolve } from 'path';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        track: resolve(__dirname, 'track.html'),
+        flappy: resolve(__dirname, 'flappy-bird.html'),
+      },
+    },
+  },
+});

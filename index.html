@@ -1,14 +1,261 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="/favicon.ico" />
-    <title>WebGPU EANNs</title>
-  </head>
-  <body>
-    <canvas id="webgpu-canvas" aria-label="WebGPU demo canvas"></canvas>
-    <div id="message" role="alert"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGPU EANN Demos — Evolutionary Artificial Neural Networks</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0c14;
+      --bg-card: rgba(22, 27, 38, 0.7);
+      --border-card: rgba(255, 255, 255, 0.08);
+      --accent-indigo: #6366f1;
+      --accent-emerald: #10b981;
+      --text-main: #f3f4f6;
+      --text-sub: #9ca3af;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      background-image: 
+        radial-gradient(circle at 15% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+        radial-gradient(circle at 85% 80%, rgba(16, 185, 129, 0.15) 0%, transparent 40%);
+    }
+
+    .container {
+      max-width: 1100px;
+      width: 100%;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 3.5rem;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.35rem 1rem;
+      border-radius: 9999px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      color: #818cf8;
+      font-weight: 600;
+      font-size: 0.875rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 1.25rem;
+    }
+
+    h1 {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      background: linear-gradient(135deg, #ffffff 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 1rem;
+    }
+
+    p.subtitle {
+      font-size: 1.25rem;
+      color: var(--text-sub);
+      max-width: 650px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    .demo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 2rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 1.5rem;
+      padding: 2rem;
+      backdrop-filter: blur(12px);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--card-accent, var(--accent-indigo)), transparent);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-6px);
+      border-color: rgba(255, 255, 255, 0.18);
+      box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5);
+    }
+
+    .card:hover::before {
+      opacity: 1;
+    }
+
+    .card-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.75rem;
+      margin-bottom: 1.5rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .card-title {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      color: #fff;
+    }
+
+    .card-desc {
+      color: var(--text-sub);
+      font-size: 1rem;
+      line-height: 1.6;
+      margin-bottom: 1.75rem;
+    }
+
+    .tag-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 0.375rem;
+      background: rgba(255, 255, 255, 0.06);
+      color: #cbd5e1;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.875rem 1.5rem;
+      border-radius: 0.75rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background: var(--card-accent, var(--accent-indigo));
+      color: #fff;
+      box-shadow: 0 4px 14px 0 rgba(99, 102, 241, 0.35);
+    }
+
+    .btn-primary:hover {
+      filter: brightness(1.15);
+      box-shadow: 0 6px 20px 0 rgba(99, 102, 241, 0.5);
+    }
+
+    footer {
+      margin-top: 4rem;
+      text-align: center;
+      font-size: 0.875rem;
+      color: #64748b;
+    }
+
+    footer a {
+      color: #94a3b8;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">🚀 WebGPU Hardware Acceleration</div>
+      <h1>EANN Intelligence Demos</h1>
+      <p class="subtitle">Massively parallel Evolutionary Artificial Neural Networks running 10,000+ agents in real-time WebGPU compute shaders.</p>
+    </header>
+
+    <div class="demo-grid">
+      <!-- 2D Car Racing Card -->
+      <div class="card" style="--card-accent: #6366f1;">
+        <div>
+          <div class="card-icon">🏎️</div>
+          <h2 class="card-title">2D Car Racing</h2>
+          <p class="card-desc">
+            10,000 autonomous vehicles learn continuous steering & speed control over complex racing circuits. Features 5-raycast sensor arrays, active braking, checkpoint progress rewards, and off-track penalties.
+          </p>
+          <div class="tag-group">
+            <span class="tag">10,000 Population</span>
+            <span class="tag">WGSL Compute</span>
+            <span class="tag">Continuous Control</span>
+            <span class="tag">Blend Crossover</span>
+          </div>
+        </div>
+        <a href="/track.html?pop=1000&speed=16&track=track1" class="btn btn-primary">
+          Launch Car Racing Demo &rarr;
+        </a>
+      </div>
+
+      <!-- Flappy Bird Card -->
+      <div class="card" style="--card-accent: #10b981;">
+        <div>
+          <div class="card-icon">🐤</div>
+          <h2 class="card-title">Flappy Bird</h2>
+          <p class="card-desc">
+            10,000 birds learn flap timing & obstacle avoidance to fly through dynamic pipe gaps. Evaluated 100% in WebGPU compute shaders with real-time genetic algorithm selection and neural inference.
+          </p>
+          <div class="tag-group">
+            <span class="tag">10,000 Population</span>
+            <span class="tag">WGSL Physics</span>
+            <span class="tag">Dynamic Pipe Gaps</span>
+            <span class="tag">64x Real-Time</span>
+          </div>
+        </div>
+        <a href="/flappy-bird.html?pop=1000&speed=16" class="btn btn-primary" style="background: #10b981; box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.35);">
+          Launch Flappy Bird Demo &rarr;
+        </a>
+      </div>
+    </div>
+
+    <footer>
+      WebGPU EANN Framework &bull; Powered by WebGPU &amp; Genetic Algorithms
+    </footer>
+  </div>
+</body>
 </html>
