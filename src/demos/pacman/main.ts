@@ -5,6 +5,7 @@ import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
 import { PacmanEvolution, type BestAgentSnapshot } from './pacman_evolution';
+import { loadPacmanModelFile, loadSavedPacmanBest, savePacmanModel } from './pacman_model';
 import { PacmanRenderer } from './pacman_renderer';
 
 const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
@@ -55,19 +56,62 @@ async function main(): Promise<void> {
   const evolution = PacmanEvolution.init(gpu.device, settings.population);
   const renderer = await PacmanRenderer.create(canvas, gpu, evolution.buffers);
   const hud = createHud();
-  const networkPanel = new NetworkPanel([17, 12, 4], {
+  const networkPanel = new NetworkPanel(PacmanEvolution.topology, {
     variant: 'snake',
-    outputLabels: ['UP', 'DOWN', 'LEFT', 'RIGHT'],
+    outputLabels: ['UP', 'RIGHT', 'DOWN', 'LEFT'],
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
   });
 
-  const notWired = (): void => {
-    showMessage('Model save/load is not wired up for Pac-Man yet.');
-  };
+  const isPlayMode = settings.mode === 'Play';
+  evolution.setPlayMode(isPlayMode);
+  // Play mode starts frozen at the initial position; the first arrow key starts the game.
+  let waiting = isPlayMode;
+
+  if (isPlayMode) {
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        waiting = true;
+        evolution.resetDisplayAgent();
+        return;
+      }
+      let dir = -1;
+      if (e.key === 'ArrowUp' || e.code === 'KeyW') dir = 0;
+      else if (e.key === 'ArrowRight' || e.code === 'KeyD') dir = 3;
+      else if (e.key === 'ArrowDown' || e.code === 'KeyS') dir = 1;
+      else if (e.key === 'ArrowLeft' || e.code === 'KeyA') dir = 2;
+
+      if (dir >= 0) {
+        e.preventDefault();
+        waiting = false;
+        evolution.setPlayerDesiredDir(dir);
+        void evolution.readBestAgentState().then((best) => {
+          if (best.gameOver) evolution.resetDisplayAgent();
+        });
+      }
+    });
+  }
+
   const controls = createDemoSettingsPanel(settings, {
-    onSaveModel: notWired,
-    onLoadSavedBest: notWired,
-    onLoadModelFile: notWired,
+    onSaveModel: () => {
+      savePacmanModel(evolution.displayGenome(), evolution.bestMeta());
+    },
+    onLoadSavedBest: () => {
+      const saved = loadSavedPacmanBest();
+      if (!saved) {
+        showMessage('No saved best model found for Pac-Man.');
+        return;
+      }
+      evolution.injectBest(saved.weights);
+    },
+    onLoadModelFile: async (file) => {
+      try {
+        const weights = await loadPacmanModelFile(file);
+        evolution.injectBest(weights);
+      } catch (err) {
+        showError(err);
+      }
+    },
   });
 
   // Fixed 60 Hz sim ticks (the source engine's logic rate) x sim speed.
@@ -79,19 +123,31 @@ async function main(): Promise<void> {
     last = now;
     const steps = Math.min(Math.floor(acc), 240);
     acc -= steps;
-    if (steps > 0) evolution.substeps(steps);
-    void evolution.checkAndEvolve();
+    if (steps > 0 && !waiting) evolution.substeps(steps);
+    if (!isPlayMode) {
+      void evolution.checkAndEvolve();
+    }
     void evolution.readBestAgentState().then((best) => {
       renderer.setBestIndex(best.index);
-      hud.update(best, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index), {
-        stats: [
-          ['GEN', evolution.generation],
-          ['SCORE', best.score],
-          ['DOTS', best.dotsLeft],
-          ['LEVEL', best.level],
-          ['POP LEFT', best.aliveCount],
-        ],
+      hud.update(best, isPlayMode ? 0 : evolution.generation);
+      networkPanel.draw(evolution.displayGenome(), {
+        stats: isPlayMode
+          ? [
+              ['MODE', 'PLAY'],
+              ['SCORE', best.score],
+              ['DOTS', best.dotsLeft],
+              ['LEVEL', best.level],
+              ['STATUS', waiting ? 'READY (Press Arrow Key)' : best.gameOver ? 'GAME OVER (Press Arrow Key)' : 'PLAYING'],
+            ]
+          : [
+              ['GEN', evolution.generation],
+              ['SCORE', best.score],
+              ['BEST SCORE', best.bestScore],
+              ['BEST GEN', best.bestGeneration],
+              ['DOTS', best.dotsLeft],
+              ['LEVEL', best.level],
+              ['POP LEFT', best.aliveCount],
+            ],
       });
     });
     renderer.render((now - startTime) / 1000);

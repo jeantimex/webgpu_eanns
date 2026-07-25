@@ -48,7 +48,7 @@ struct Uniforms {
 @group(0) @binding(3) var<storage, read> agents: array<f32>;
 @group(0) @binding(4) var<storage, read> pelletList: array<u32>; // c, r, power, pad per pellet
 
-const AGENT_FLOATS = 64u;
+const AGENT_FLOATS = 68u;
 const A_GHOSTS = 17u;
 const A_PELLETS = 36u;
 

@@ -9,16 +9,15 @@
 export const pacmanShader = /* wgsl */ `
 struct SimParams {
   agentCount: u32,
-  pad0: u32,
-  pad1: u32,
+  trainCount: u32,
+  playMode: u32,
   pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
-@group(0) @binding(1) var<storage, read> genomes: array<f32>; // 256 weights per agent [16, 12, 4]
+@group(0) @binding(1) var<storage, read> genomes: array<f32>; // [51, 16, 4]
 @group(0) @binding(2) var<storage, read_write> agents: array<f32>;
 @group(0) @binding(3) var<storage, read> mazeBits: array<u32>; // 31 words, bit c = wall
-@group(0) @binding(4) var<storage, read> initPellets: array<u32>; // 28 words
 
 // Agent layout (must match A in pacman_buffers.ts).
 const A_DIR = 2u;
@@ -34,13 +33,16 @@ const A_COMBO = 12u;
 const A_HOUSET = 13u;
 const A_RELEASED = 14u;
 const A_OVER = 15u;
+const A_MOVE_TICKS = 16u;
 const A_GHOSTS = 17u; // 4 x [x, y, dir, mode]
 const A_TICKS = 33u;
 const A_SINCE_EAT = 34u;
 const A_FRUIT = 35u;
 const A_PELLETS = 36u; // 28 u32 words
+const A_PELLET_PROGRESS = 64u;
+const A_TOTAL_REWARD = 65u;
 
-const AGENT_FLOATS = 64u;
+const AGENT_FLOATS = 68u;
 const DT = 0.016666667; // 1/60
 const PAC_SPEED = 11.0;
 const MAX_TICKS = 21600u;
@@ -66,7 +68,8 @@ fn roundByDir(v: f32, d: u32) -> f32 {
 }
 
 fn isWallCell(c: i32, r: i32) -> bool {
-  if (c < 0 || c > 27 || r < 0 || r > 30) { return false; }
+  if (r == 14 && (c < 0 || c > 27)) { return false; }
+  if (c < 0 || c > 27 || r < 0 || r > 30) { return true; }
   return ((mazeBits[r] >> u32(c)) & 1u) == 1u;
 }
 
@@ -77,10 +80,13 @@ fn wallAhead(x: f32, y: f32, d: u32, step: f32) -> bool {
   return isWallCell(i32(roundByDir(nx, d)), i32(roundByDir(ny, d)));
 }
 
-fn warpX(x: f32) -> f32 {
-  if (x < -0.75) { return 27.75; }
-  if (x > 27.75) { return -0.75; }
-  return x;
+fn warpX(x: f32, y: f32) -> f32 {
+  if (y > 13.0 && y < 15.0) {
+    if (x < -0.75) { return 27.75; }
+    if (x > 27.75) { return -0.75; }
+    return x;
+  }
+  return clamp(x, 0.0, 27.0);
 }
 
 fn dist2(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
@@ -89,11 +95,43 @@ fn dist2(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
   return dx * dx + dy * dy;
 }
 
+fn hash(seed: u32) -> u32 {
+  var x = seed;
+  x ^= x >> 16u;
+  x *= 0x7feb352du;
+  x ^= x >> 15u;
+  x *= 0x846ca68bu;
+  x ^= x >> 16u;
+  return x;
+}
+
+fn rand01(seed: u32) -> f32 {
+  return f32(hash(seed) & 0x00ffffffu) / 16777216.0;
+}
+
+fn nearestPelletDist(x: f32, y: f32, b: u32) -> f32 {
+  var best = 1e9;
+  for (var w = 0u; w < 28u; w++) {
+    let word = bitcast<u32>(agents[b + A_PELLETS + w]);
+    if (word == 0u) { continue; }
+    for (var bit = 0u; bit < 32u; bit++) {
+      if (((word >> bit) & 1u) == 0u) { continue; }
+      let idx = w * 32u + bit;
+      let dx = f32(idx % 28u) - x;
+      let dy = f32(idx / 28u) - y;
+      best = min(best, sqrt(dx * dx + dy * dy));
+    }
+  }
+  if (best > 1e8) { return 0.0; }
+  return best;
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
   if (i >= params.agentCount) { return; }
   let b = i * AGENT_FLOATS;
+  let isPlayer = params.playMode == 1u && i == params.agentCount - 1u;
 
   if (agents[b + A_OVER] > 0.5) { return; }
 
@@ -106,7 +144,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Stall timeout: a pac that stops eating (e.g. camps a corner) ends its game.
   agents[b + A_SINCE_EAT] = agents[b + A_SINCE_EAT] + DT;
-  if (agents[b + A_SINCE_EAT] > 20.0) {
+  if (!isPlayer && agents[b + A_SINCE_EAT] > 8.0) {
+    agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] - 100.0;
     agents[b + A_OVER] = 1.0;
     return;
   }
@@ -150,152 +189,296 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var pdir = u32(agents[b + A_DIR]);
   let gbase = b + A_GHOSTS;
 
-  // --- NN inputs (16) ---
-  var inputs: array<f32, 17>;
-  // 0-3: wall distance up/down/left/right from current tile (tiles, /10)
+  // --- NN inputs (80 total):
+  // 0..48: 7x7 local grid (-1=wall, 0=empty, 1=pellet, 2=pacman, -2=ghost, 3=scared ghost)
+  // 49..50: nearest pellet (dx/14, dy/15.5)
+  // 51..53: nearest dangerous ghost (dx/14, dy/15.5, dist/20)
+  // 54..55: nearest scared ghost (dx/14, dy/15.5)
+  // 56..59: wall sensors (UP, RIGHT, DOWN, LEFT)
+  // 60..63: current facing dir (UP, RIGHT, DOWN, LEFT)
+  // 64..79: 4 corridor features (wallDist, pelletDist, ghostDist, scaredDist) for UP, RIGHT, DOWN, LEFT
+  var inputs: array<f32, 80>;
   let pc = i32(floor(px + 0.5));
   let pr = i32(floor(py + 0.5));
-  for (var d = 0u; d < 4u; d++) {
-    let dv = dirVec(d);
-    var dist = 0;
-    for (var s = 1; s <= 10; s++) {
-      if (isWallCell(pc + i32(dv.x) * s, pr + i32(dv.y) * s)) { break; }
-      dist = s;
+  for (var yy = 0u; yy < 7u; yy++) {
+    for (var xx = 0u; xx < 7u; xx++) {
+      let c = pc + i32(xx) - 3;
+      let r = pr + i32(yy) - 3;
+      var value = 0.0;
+      if (isWallCell(c, r)) {
+        value = -1.0;
+      } else if (c >= 0 && c <= 27 && r >= 0 && r <= 30) {
+        let idx = u32(r) * 28u + u32(c);
+        let word = bitcast<u32>(agents[b + A_PELLETS + (idx >> 5u)]);
+        if (((word >> (idx & 31u)) & 1u) == 1u) {
+          value = 1.0;
+        }
+      }
+      for (var g = 0u; g < 4u; g++) {
+        let gb = gbase + g * 4u;
+        let gc = i32(floor(agents[gb] + 0.5));
+        let gr = i32(floor(agents[gb + 1u] + 0.5));
+        let gmode = agents[gb + 3u];
+        if (gc == c && gr == r && gmode != 2.0) {
+          value = select(-2.0, 3.0, gmode == 1.0);
+        }
+      }
+      if (c == pc && r == pr) {
+        value = 2.0;
+      }
+      inputs[yy * 7u + xx] = value;
     }
-    inputs[d] = f32(dist) / 10.0;
   }
-  // 4-5: nearest pellet dx, dy (/10)
-  var bestDot = 9999.0;
-  var dotDx = 0.0;
-  var dotDy = 0.0;
+  var nearestDx = 0.0;
+  var nearestDy = 0.0;
+  var nearestD = 1e9;
   for (var w = 0u; w < 28u; w++) {
     let word = bitcast<u32>(agents[b + A_PELLETS + w]);
     if (word == 0u) { continue; }
     for (var bit = 0u; bit < 32u; bit++) {
       if (((word >> bit) & 1u) == 0u) { continue; }
       let idx = w * 32u + bit;
-      let cc = f32(idx % 28u) - px;
-      let rr = f32(idx / 28u) - py;
-      let dd = cc * cc + rr * rr;
-      if (dd < bestDot) {
-        bestDot = dd;
-        dotDx = cc;
-        dotDy = rr;
+      let dx = f32(idx % 28u) - px;
+      let dy = f32(idx / 28u) - py;
+      let d = dx * dx + dy * dy;
+      if (d < nearestD) {
+        nearestD = d;
+        nearestDx = dx;
+        nearestDy = dy;
       }
     }
   }
-  inputs[4] = clamp(dotDx / 10.0, -1.0, 1.0);
-  inputs[5] = clamp(dotDy / 10.0, -1.0, 1.0);
-  // 6-7: nearest power pellet dx, dy (/10)
-  var bestPow = 9999.0;
-  var powDx = 0.0;
-  var powDy = 0.0;
-  let powTiles = array<vec2f, 4>(vec2f(1.0, 3.0), vec2f(26.0, 3.0), vec2f(1.0, 23.0), vec2f(26.0, 23.0));
-  for (var p = 0u; p < 4u; p++) {
-    let idx = u32(powTiles[p].y) * 28u + u32(powTiles[p].x);
-    let word = bitcast<u32>(agents[b + A_PELLETS + (idx >> 5u)]);
-    if (((word >> (idx & 31u)) & 1u) == 0u) { continue; }
-    let cc = powTiles[p].x - px;
-    let rr = powTiles[p].y - py;
-    let dd = cc * cc + rr * rr;
-    if (dd < bestPow) {
-      bestPow = dd;
-      powDx = cc;
-      powDy = rr;
-    }
-  }
-  inputs[6] = clamp(powDx / 10.0, -1.0, 1.0);
-  inputs[7] = clamp(powDy / 10.0, -1.0, 1.0);
-  // 8-11: two nearest active ghosts dx, dy; 12-13: nearest scared ghost dx, dy
-  var g1d = 9999.0; var g2d = 9999.0; var gsd = 9999.0;
-  var g1 = vec2f(0.0, 0.0); var g2 = vec2f(0.0, 0.0); var gs = vec2f(0.0, 0.0);
+  inputs[49] = clamp(nearestDx / 14.0, -1.0, 1.0);
+  inputs[50] = clamp(nearestDy / 15.5, -1.0, 1.0);
+
+  // Global Ghost sensors
+  var nearestGhostDx = 0.0;
+  var nearestGhostDy = 0.0;
+  var nearestGhostD = 1e9;
+  var nearestScaredDx = 0.0;
+  var nearestScaredDy = 0.0;
+  var nearestScaredD = 1e9;
   for (var g = 0u; g < 4u; g++) {
     let gb = gbase + g * 4u;
-    let mode = agents[gb + 3u];
-    let rel = vec2f(agents[gb] - px, agents[gb + 1u] - py);
-    let dd = rel.x * rel.x + rel.y * rel.y;
-    if (mode == 0.0) {
-      if (dd < g1d) { g2d = g1d; g2 = g1; g1d = dd; g1 = rel; }
-      else if (dd < g2d) { g2d = dd; g2 = rel; }
-    } else if (mode == 1.0 && dd < gsd) {
-      gsd = dd;
-      gs = rel;
+    let gmode = agents[gb + 3u];
+    let gxx = agents[gb];
+    let gyy = agents[gb + 1u];
+    let gdx = gxx - px;
+    let gdy = gyy - py;
+    let gd = gdx * gdx + gdy * gdy;
+    if (gmode == 1.0) {
+      if (gd < nearestScaredD) {
+        nearestScaredD = gd;
+        nearestScaredDx = gdx;
+        nearestScaredDy = gdy;
+      }
+    } else if (gmode != 2.0) {
+      if (gd < nearestGhostD) {
+        nearestGhostD = gd;
+        nearestGhostDx = gdx;
+        nearestGhostDy = gdy;
+      }
     }
   }
-  inputs[8] = clamp(g1.x / 10.0, -1.0, 1.0);
-  inputs[9] = clamp(g1.y / 10.0, -1.0, 1.0);
-  inputs[10] = clamp(g2.x / 10.0, -1.0, 1.0);
-  inputs[11] = clamp(g2.y / 10.0, -1.0, 1.0);
-  inputs[12] = clamp(gs.x / 10.0, -1.0, 1.0);
-  inputs[13] = clamp(gs.y / 10.0, -1.0, 1.0);
-  // 14-15: fright remaining, scatter/chase phase
-  inputs[14] = clamp(agents[b + A_FRIGHT] / 6.0, 0.0, 1.0);
-  inputs[15] = agents[b + A_PHASE];
-  // 16: stall clock (seconds since last pellet / 20) — eating urgency.
-  inputs[16] = clamp(agents[b + A_SINCE_EAT] / 20.0, 0.0, 1.0);
+  inputs[51] = clamp(nearestGhostDx / 14.0, -1.0, 1.0);
+  inputs[52] = clamp(nearestGhostDy / 15.5, -1.0, 1.0);
+  inputs[53] = select(1.0, clamp(sqrt(nearestGhostD) / 20.0, 0.0, 1.0), nearestGhostD < 1e8);
+  inputs[54] = clamp(nearestScaredDx / 14.0, -1.0, 1.0);
+  inputs[55] = clamp(nearestScaredDy / 15.5, -1.0, 1.0);
 
-  // --- Forward pass [17 -> 12 -> 4]: relu hidden, linear outputs, argmax. ---
-  var offset = i * 268u;
-  var hidden: array<f32, 12>;
-  for (var h = 0u; h < 12u; h++) {
-    var sum = genomes[offset + 204u + h]; // bias row
-    for (var k = 0u; k < 17u; k++) {
-      sum += inputs[k] * genomes[offset + k * 12u + h];
+  // Wall sensors (UP, RIGHT, DOWN, LEFT) & Facing direction (one-hot)
+  let checkStep = 1.0;
+  inputs[56] = select(0.0, 1.0, wallAhead(px, py, 0u, checkStep));
+  inputs[57] = select(0.0, 1.0, wallAhead(px, py, 3u, checkStep));
+  inputs[58] = select(0.0, 1.0, wallAhead(px, py, 1u, checkStep));
+  inputs[59] = select(0.0, 1.0, wallAhead(px, py, 2u, checkStep));
+  inputs[60] = select(0.0, 1.0, pdir == 0u);
+  inputs[61] = select(0.0, 1.0, pdir == 3u);
+  inputs[62] = select(0.0, 1.0, pdir == 1u);
+  inputs[63] = select(0.0, 1.0, pdir == 2u);
+
+  // 4 Corridor Raycast Features [UP=0, RIGHT=3, DOWN=1, LEFT=2]
+  let cardDirs = array<u32, 4>(0u, 3u, 1u, 2u);
+  for (var cd = 0u; cd < 4u; cd++) {
+    let d = cardDirs[cd];
+    let dv = dirVec(d);
+    var corridorWallDist = 1.0;
+    var corridorPelletDist = 1.0;
+    var corridorGhostDist = 1.0;
+    var corridorScaredDist = 1.0;
+    for (var s = 1; s <= 14; s++) {
+      let cc = pc + i32(dv.x) * s;
+      let cr = pr + i32(dv.y) * s;
+      if (isWallCell(cc, cr)) {
+        if (corridorWallDist == 1.0) { corridorWallDist = f32(s) / 14.0; }
+        break;
+      }
+      if (cc >= 0 && cc <= 27 && cr >= 0 && cr <= 30) {
+        let idx = u32(cr) * 28u + u32(cc);
+        let word = bitcast<u32>(agents[b + A_PELLETS + (idx >> 5u)]);
+        if (((word >> (idx & 31u)) & 1u) == 1u && corridorPelletDist == 1.0) {
+          corridorPelletDist = f32(s) / 14.0;
+        }
+      }
+      for (var g = 0u; g < 4u; g++) {
+        let gb = gbase + g * 4u;
+        let gc = i32(floor(agents[gb] + 0.5));
+        let gr = i32(floor(agents[gb + 1u] + 0.5));
+        let gmode = agents[gb + 3u];
+        if (gc == cc && gr == cr && gmode != 2.0) {
+          if (gmode == 1.0 && corridorScaredDist == 1.0) {
+            corridorScaredDist = f32(s) / 14.0;
+          } else if (gmode != 1.0 && corridorGhostDist == 1.0) {
+            corridorGhostDist = f32(s) / 14.0;
+          }
+        }
+      }
     }
-    hidden[h] = max(sum, 0.0);
+    let baseIn = 64u + cd * 4u;
+    inputs[baseIn] = corridorWallDist;
+    inputs[baseIn + 1u] = corridorPelletDist;
+    inputs[baseIn + 2u] = corridorGhostDist;
+    inputs[baseIn + 3u] = corridorScaredDist;
   }
-  offset += 216u; // 17x12 weights + 12 biases
-  var bestOut = -1e30;
-  var desired = pdir;
-  for (var j = 0u; j < 4u; j++) {
-    var sum = genomes[offset + 48u + j]; // bias row
-    for (var h = 0u; h < 12u; h++) {
-      sum += hidden[h] * genomes[offset + h * 4u + j];
+
+  // --- Forward pass [80 -> 32 -> 16 -> 4] ---
+  var offset = i * 3188u;
+  var h1: array<f32, 32>;
+  for (var h = 0u; h < 32u; h++) {
+    var sum = genomes[offset + 2560u + h]; // bias row
+    for (var k = 0u; k < 80u; k++) {
+      sum += inputs[k] * genomes[offset + k * 32u + h];
     }
+    h1[h] = max(sum, 0.0);
+  }
+  offset += 2592u; // 80x32 weights + 32 biases
+  var h2: array<f32, 16>;
+  for (var h = 0u; h < 16u; h++) {
+    var sum = genomes[offset + 512u + h]; // bias row
+    for (var k = 0u; k < 32u; k++) {
+      sum += h1[k] * genomes[offset + k * 16u + h];
+    }
+    h2[h] = max(sum, 0.0);
+  }
+  offset += 528u; // 32x16 weights + 16 biases
+  var outputs: array<f32, 4>;
+  var bestOut = -1e30;
+  var bestAction = 0u;
+  let actionToDir = array<u32, 4>(0u, 3u, 1u, 2u);
+  for (var j = 0u; j < 4u; j++) {
+    var sum = genomes[offset + 64u + j]; // bias row
+    for (var h = 0u; h < 16u; h++) {
+      sum += h2[h] * genomes[offset + h * 4u + j];
+    }
+    let candDir = actionToDir[j];
+    // Inertia bias: slightly prefer continuing in current direction
+    if (candDir == pdir) { sum += 0.2; }
+    // Ghost hazard mask: heavily penalize moving into an immediately adjacent ghost
+    let checkDv = dirVec(candDir);
+    let checkC = pc + i32(checkDv.x);
+    let checkR = pr + i32(checkDv.y);
+    for (var g = 0u; g < 4u; g++) {
+      let gb = gbase + g * 4u;
+      let gc = i32(floor(agents[gb] + 0.5));
+      let gr = i32(floor(agents[gb + 1u] + 0.5));
+      if (gc == checkC && gr == checkR && agents[gb + 3u] != 2.0 && agents[gb + 3u] != 1.0) {
+        sum -= 5.0; // heavy danger penalty
+      }
+    }
+    outputs[j] = sum;
     if (sum > bestOut) {
       bestOut = sum;
-      desired = j;
+      bestAction = j;
     }
   }
-  agents[b + A_DESIRED] = f32(desired);
+  var desired = actionToDir[bestAction];
+  if (isPlayer) {
+    desired = u32(agents[b + A_DESIRED]);
+  }
 
   // --- Pacman movement (handleSnapped/UnsnappedMovement in the repo). ---
   if (agents[b + A_MOVING] > 0.5) {
+    let oldPx = px;
+    let oldPy = py;
+    let oldPelletDist = nearestPelletDist(px, py, b);
     let step = PAC_SPEED * DT;
-    let snapped = select(px == floor(px), py == floor(py), pdir <= 1u);
-    if (snapped) {
-      if (wallAhead(px, py, desired, step)) {
-        // Desired is blocked: keep the current direction if open, else wait a
-        // tick (the NN may pick a legal direction next tick — never freeze).
-        if (!wallAhead(px, py, pdir, step)) {
-          let dv = dirVec(pdir);
-          px += dv.x * step; py += dv.y * step;
+    let snapped = select(abs(px - round(px)) < step * 0.5, abs(py - round(py)) < step * 0.5, pdir <= 1u);
+    let isCloseGhost = nearestGhostD < 16.0; // ghost within 4 tiles
+    if (snapped || isCloseGhost) {
+      if (i < params.trainCount && rand01(i * 747796405u + ticks * 2891336453u) < 0.05) {
+        var legalCount = 0u;
+        for (var a = 0u; a < 4u; a++) {
+          if (!wallAhead(px, py, actionToDir[a], step)) { legalCount++; }
         }
+        if (legalCount > 0u) {
+          let pickIndex = u32(floor(rand01(i * 277803737u + ticks * 1442695041u) * f32(legalCount)));
+          var seen = 0u;
+          for (var a = 0u; a < 4u; a++) {
+            let cand = actionToDir[a];
+            if (!wallAhead(px, py, cand, step)) {
+              if (seen == pickIndex) { desired = cand; }
+              seen++;
+            }
+          }
+        }
+      }
+      if (wallAhead(px, py, desired, step)) {
+        if (isPlayer) {
+          // Queued turn: keep the current heading until the turn opens up.
+          desired = pdir;
+        } else {
+          var legalBest = -1e30;
+          for (var a = 0u; a < 4u; a++) {
+            let cand = actionToDir[a];
+            if (!wallAhead(px, py, cand, step) && outputs[a] > legalBest) {
+              legalBest = outputs[a];
+              desired = cand;
+            }
+          }
+        }
+      }
+      if (!isPlayer) {
+        agents[b + A_DESIRED] = f32(desired);
+      }
+      if (wallAhead(px, py, desired, step)) {
+        if (pdir <= 1u) { py = round(py); } else { px = round(px); }
       } else {
+        if (desired != pdir) {
+          if (pdir <= 1u) { py = round(py); } else { px = round(px); }
+        }
         pdir = desired;
         agents[b + A_DIR] = f32(pdir);
         let dv = dirVec(pdir);
         px += dv.x * step; py += dv.y * step;
       }
     } else {
-      if (desired == opp(pdir)) {
+      if (desired == opp(pdir) && !wallAhead(px, py, desired, step)) {
         pdir = desired;
         agents[b + A_DIR] = f32(pdir);
         let dv = dirVec(pdir);
         px += dv.x * step; py += dv.y * step;
+      } else if (wallAhead(px, py, pdir, step)) {
+        if (pdir <= 1u) { py = round(py); } else { px = round(px); }
       } else {
         let dv = dirVec(pdir);
         let nx = px + dv.x * step;
         let ny = py + dv.y * step;
         if (floor(nx) != floor(px) || floor(ny) != floor(py)) {
-          // Crossed a tile boundary: snap the movement axis (cornering assist).
           if (pdir <= 1u) { py = roundByDir(py, pdir); } else { px = roundByDir(px, pdir); }
         } else {
           px = nx; py = ny;
         }
       }
     }
-    px = warpX(px);
+    px = warpX(px, py);
+    py = clamp(py, 0.0, 30.0);
+    if (abs(px - oldPx) > 0.001 || abs(py - oldPy) > 0.001) {
+      agents[b + A_MOVE_TICKS] = agents[b + A_MOVE_TICKS] + 1.0;
+      let newPelletDist = nearestPelletDist(px, py, b);
+      let progress = oldPelletDist - newPelletDist;
+      agents[b + A_PELLET_PROGRESS] = agents[b + A_PELLET_PROGRESS] + max(progress, 0.0);
+      agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + clamp(progress, -0.05, 0.25);
+    }
   }
   agents[b] = px;
   agents[b + 1u] = py;
@@ -316,6 +499,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let isPower = (er == 3 || er == 23) && (ec == 1 || ec == 26);
       if (isPower) {
         agents[b + A_SCORE] = agents[b + A_SCORE] + 50.0;
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 50.0;
         agents[b + A_FRIGHT] = 6.0;
         agents[b + A_COMBO] = 0.0;
         for (var g = 0u; g < 4u; g++) {
@@ -327,6 +511,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
       } else {
         agents[b + A_SCORE] = agents[b + A_SCORE] + 10.0;
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 10.0;
       }
     }
   }
@@ -338,6 +523,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var nt = fruitT - DT;
     if (dist2(px, py, 13.5, 17.0) < 1.0) {
       agents[b + A_SCORE] = agents[b + A_SCORE] + 100.0;
+      agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 100.0;
       nt = select(-1.0, -2.0, dotsEaten >= 170.0);
     } else if (nt <= 0.0) {
       nt = select(-1.0, -2.0, dotsEaten >= 170.0);
@@ -385,11 +571,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       else if (mode == 1u) { mult = 0.5; }
       let step = mult * PAC_SPEED * DT;
 
-      let snapped = select(gx == floor(gx), gy == floor(gy), gdir <= 1u);
+      let snapped = select(abs(gx - round(gx)) < step * 0.5, abs(gy - round(gy)) < step * 0.5, gdir <= 1u);
       if (snapped) {
         // Decide a new direction at the tile center.
-        let gc = i32(gx);
-        let gr = i32(gy);
+        let gc = i32(round(gx));
+        let gr = i32(round(gy));
         // Target tile by ghost id and mode.
         var tx = px;
         var ty = py;
@@ -429,7 +615,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             if (dd2 > bestD) { bestD = dd2; bestDir = dd; }
           } else if (dd2 < bestD) { bestD = dd2; bestDir = dd; }
         }
-        if (count > 0u) { gdir = bestDir; }
+        if (count > 0u) {
+          gdir = bestDir;
+        } else if (isWallCell(gc + i32(dirVec(gdir).x), gr + i32(dirVec(gdir).y))) {
+          gdir = opp(gdir);
+        }
         let dv = dirVec(gdir);
         gx += dv.x * step; gy += dv.y * step;
       } else {
@@ -450,7 +640,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           gx = nx; gy = ny;
         }
       }
-      gx = warpX(gx);
+      gx = warpX(gx, gy);
+      gy = clamp(gy, 0.0, 30.0);
     }
 
     agents[gb] = gx;
@@ -464,32 +655,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let combo = min(agents[b + A_COMBO] + 1.0, 4.0);
         agents[b + A_COMBO] = combo;
         agents[b + A_SCORE] = agents[b + A_SCORE] + 100.0 * pow(2.0, combo);
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 100.0 * pow(2.0, combo);
         agents[gb + 3u] = 2.0; // eyes
       } else {
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] - 100.0;
         agents[b + A_OVER] = 1.0;
       }
     }
   }
 
-  // --- Level clear: restore pellets, bump level, respawn positions. ---
+  // --- Level clear: terminal success for training. ---
   if (agents[b + A_DOTS] <= 0.0) {
-    agents[b + A_LEVEL] = agents[b + A_LEVEL] + 1.0;
-    agents[b + A_DOTS] = 244.0;
-    agents[b + A_FRUIT] = 0.0;
-    agents[b + A_SINCE_EAT] = 0.0;
-    for (var w = 0u; w < 28u; w++) {
-      agents[b + A_PELLETS + w] = bitcast<f32>(initPellets[w]);
-    }
-    agents[b] = 13.5; agents[b + 1u] = 23.0;
-    agents[b + A_DIR] = 2.0; agents[b + A_DESIRED] = 2.0; agents[b + A_MOVING] = 1.0;
-    let g = b + A_GHOSTS;
-    agents[g] = 13.5; agents[g + 1u] = 11.0; agents[g + 2u] = 2.0; agents[g + 3u] = 0.0;
-    agents[g + 4u] = 13.5; agents[g + 5u] = 14.0; agents[g + 6u] = 1.0; agents[g + 7u] = 3.0;
-    agents[g + 8u] = 11.5; agents[g + 9u] = 14.0; agents[g + 10u] = 0.0; agents[g + 11u] = 3.0;
-    agents[g + 12u] = 15.5; agents[g + 13u] = 14.0; agents[g + 14u] = 0.0; agents[g + 15u] = 3.0;
-    agents[b + A_MODET] = 0.0; agents[b + A_PHASE] = 0.0;
-    agents[b + A_FRIGHT] = 0.0; agents[b + A_COMBO] = 0.0;
-    agents[b + A_HOUSET] = 0.0; agents[b + A_RELEASED] = 0.0;
+    agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 1000.0 + f32(MAX_TICKS - ticks) * 0.1;
+    agents[b + A_OVER] = 1.0;
+    return;
   }
 }
 `;

@@ -90,7 +90,7 @@ export function createDemoSettingsPanel(
   };
 
   const mode = document.createElement('select');
-  for (const value of ['Train', 'Test'] as const) {
+  for (const value of ['Train', 'Test', 'Play'] as const) {
     const option = document.createElement('option');
     option.value = value;
     option.textContent = value;

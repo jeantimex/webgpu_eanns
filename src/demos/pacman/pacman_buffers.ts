@@ -1,15 +1,27 @@
 import { createBufferWithData } from '../../webgpu/utils';
 import { mazeWallBits, pelletMaskInit, pelletTiles } from './maze';
 
-/** Genome layout [17 -> 12 -> 4], layer-major row-major with bias rows last: 17x12 + 12 + 12x4 + 4. */
-export const PACMAN_GENOME_SIZE = 268;
+export const PACMAN_INPUTS = 80;
+export const PACMAN_HIDDEN1 = 32;
+export const PACMAN_HIDDEN2 = 16;
+export const PACMAN_OUTPUTS = 4;
+export const PACMAN_TOPOLOGY = [80, 32, 16, 4] as const;
+
+/** Genome layout [80 -> 32 -> 16 -> 4], layer-major row-major with bias rows last. */
+export const PACMAN_GENOME_SIZE =
+  PACMAN_INPUTS * PACMAN_HIDDEN1 +
+  PACMAN_HIDDEN1 +
+  PACMAN_HIDDEN1 * PACMAN_HIDDEN2 +
+  PACMAN_HIDDEN2 +
+  PACMAN_HIDDEN2 * PACMAN_OUTPUTS +
+  PACMAN_OUTPUTS;
 
 /**
- * Agent state, 64 f32 = 256 bytes per agent. Raw-indexed (no WGSL struct) so the
+ * Agent state, 68 f32 = 272 bytes per agent. Raw-indexed (no WGSL struct) so the
  * CPU and GPU layouts can't drift apart. Pellets live at floats 36..63 as u32
  * bit patterns (bitcast in WGSL).
  */
-export const AGENT_FLOATS = 64;
+export const AGENT_FLOATS = 68;
 export const A = {
   posX: 0,
   posY: 1,
@@ -27,12 +39,14 @@ export const A = {
   houseTimer: 13, // chained ghost-release timer
   released: 14, // how many house ghosts released so far (0..3)
   gameOver: 15,
-  deathTimer: 16, // unused (1-attempt games end on the spot)
+  moveTicks: 16, // hidden training signal: ticks where Pac-Man changed position
   ghosts: 17, // 4 ghosts x 4 floats: x, y, dir, mode (0=normal, 1=scared, 2=eyes, 3=idle, 4=leaving)
   ticks: 33, // u32, ticks alive this game (hard cap in the shader)
   sinceEat: 34, // seconds since the last pellet; stall timeout
   fruit: 35, // >0: cherry active (seconds left), 0: not yet, -1/-2: spawns consumed
   pellets: 36, // 28 u32 words: bit (r*28+c) = pellet present
+  pelletProgress: 64, // hidden training signal: accumulated decrease in nearest-pellet distance
+  totalReward: 65, // hidden training signal: accumulated environment reward
 } as const;
 
 // Movement/scoring constants from the source repo (speeds in tiles/sec; engine dt = 1/60).
@@ -47,7 +61,7 @@ export const FRIGHT_SECS = 6; // level-1 frightened duration
 export const HOUSE_RELEASE_SECS = 8; // chained, level 1
 export const START_LIVES = 0; // spare lives: 1 attempt per thread, first hit ends the game
 export const MAX_GAME_TICKS = 21600; // 6 min at 60 Hz, then the game ends
-export const STALL_SECS = 20; // no pellet for this long ends the game (anti standstill)
+export const STALL_SECS = 8; // no pellet for this long ends the game (anti standstill)
 export const FRUIT_SECS = 10; // cherry lifetime, spawns at 70 and 170 dots eaten (100 pts)
 
 export interface PacmanBuffers {
@@ -59,6 +73,7 @@ export interface PacmanBuffers {
   pelletList: GPUBuffer;
   readback: GPUBuffer;
   pelletCount: number;
+  totalAgents: number;
 }
 
 /** All agents at the arcade start state (positions in the repo's tile coords). */
@@ -87,17 +102,18 @@ export function initialAgentStates(count: number): Float32Array<ArrayBuffer> {
 }
 
 export function createPacmanBuffers(device: GPUDevice, populationSize: number): PacmanBuffers {
-  // SimParams uniform: agentCount (u32) = 4 bytes, padded to 16.
+  const totalAgents = populationSize + 1;
+  // SimParams uniform: agentCount, trainCount (u32), padded to 16.
   const paramsData = new ArrayBuffer(16);
-  new Uint32Array(paramsData)[0] = populationSize;
+  new Uint32Array(paramsData).set([totalAgents, populationSize]);
 
   const genomes = device.createBuffer({
     label: 'pacman genomes',
-    size: populationSize * PACMAN_GENOME_SIZE * 4,
+    size: totalAgents * PACMAN_GENOME_SIZE * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  const agentBytes = populationSize * AGENT_FLOATS * 4;
+  const agentBytes = totalAgents * AGENT_FLOATS * 4;
   const agents = device.createBuffer({
     label: 'pacman agents',
     size: agentBytes,
@@ -128,5 +144,6 @@ export function createPacmanBuffers(device: GPUDevice, populationSize: number): 
     pelletList: createBufferWithData(device, 'pacman pellet list', pelletData, GPUBufferUsage.STORAGE),
     readback,
     pelletCount: tiles.length,
+    totalAgents,
   };
 }

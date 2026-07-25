@@ -6,7 +6,7 @@ const POP_KEY = 'eanns:pop';
 const SPEED_KEY = 'eanns:speed';
 
 export interface Settings {
-  mode: 'Train' | 'Test';
+  mode: 'Train' | 'Test' | 'Play';
   /** Selected track name, or '' when the demo has no tracks. */
   track: string;
   population: number;
@@ -21,9 +21,9 @@ export interface Settings {
 export function currentSettings(tracks?: readonly string[]): Settings {
   const params = new URLSearchParams(window.location.search);
 
-  // 1. Mode: ?mode=Train|Test
+  // 1. Mode: ?mode=Train|Test|Play
   const rawMode = params.get('mode') ?? localStorage.getItem(MODE_KEY);
-  const mode: 'Train' | 'Test' = rawMode === 'Test' ? 'Test' : 'Train';
+  const mode: 'Train' | 'Test' | 'Play' = rawMode === 'Play' ? 'Play' : rawMode === 'Test' ? 'Test' : 'Train';
   params.set('mode', mode);
   localStorage.setItem(MODE_KEY, mode);
 
@@ -120,7 +120,7 @@ export function setupControls(
   });
 
   const gui = new GUI({ title: 'EANNs' });
-  gui.add(controls, 'mode', ['Train', 'Test']).onChange((val: 'Train' | 'Test') => updateSetting('mode', val));
+  gui.add(controls, 'mode', ['Train', 'Test', 'Play']).onChange((val: 'Train' | 'Test' | 'Play') => updateSetting('mode', val));
   if (options?.tracks) {
     gui.add(controls, 'track', options.tracks).onChange((val: string) => updateSetting('track', val));
   }
