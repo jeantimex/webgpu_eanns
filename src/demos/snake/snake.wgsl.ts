@@ -1,10 +1,11 @@
 /**
  * GPU snake sim: one thread per agent, one dispatch per move (turn-based).
- * Body = per-agent bitmask (O(1) collision) + byte ring buffer (tail removal);
- * apples spawn from a per-agent xorshift RNG. The board is 16x16 so a packed
- * cell (y*16+x, max 255) fits one byte. State is raw-indexed (see A in
+ * Body = per-agent bitmask (O(1) collision) + segment ring buffer (tail removal);
+ * apples spawn from a per-agent xorshift RNG. State is raw-indexed (see A in
  * snake_buffers.ts) — no WGSL struct, so CPU/GPU layouts cannot drift.
  */
+import { AGENT_FLOATS, CELLS, GRID, MASK_WORDS, A } from './snake_buffers';
+
 export const snakeShader = /* wgsl */ `
 struct SimParams {
   agentCount: u32,
@@ -18,25 +19,27 @@ struct SimParams {
 @group(0) @binding(2) var<storage, read_write> agents: array<f32>;
 
 // Agent layout (must match A in snake_buffers.ts).
-const A_HEAD_X = 0u;
-const A_HEAD_Y = 1u;
-const A_DIR = 2u;
-const A_OVER = 3u;
-const A_LENGTH = 4u;
-const A_APPLES = 5u;
-const A_MOVES = 6u;
-const A_SINCE_EAT = 7u;
-const A_APPLE_X = 8u;
-const A_APPLE_Y = 9u;
-const A_RING_HEAD = 10u;
-const A_RING_TAIL = 11u;
-const A_RNG = 12u;
-const A_MASK = 14u; // 8 u32 words
-const A_RING = 22u; // 64 u32 = 256 bytes
+const A_HEAD_X = ${A.headX}u;
+const A_HEAD_Y = ${A.headY}u;
+const A_DIR = ${A.dir}u;
+const A_OVER = ${A.gameOver}u;
+const A_LENGTH = ${A.length}u;
+const A_APPLES = ${A.apples}u;
+const A_MOVES = ${A.moves}u;
+const A_SINCE_EAT = ${A.sinceEat}u;
+const A_APPLE_X = ${A.appleX}u;
+const A_APPLE_Y = ${A.appleY}u;
+const A_RING_HEAD = ${A.ringHead}u;
+const A_RING_TAIL = ${A.ringTail}u;
+const A_RNG = ${A.rng}u;
+const A_MASK = ${A.bodyMask}u;
+const A_RING = ${A.ring}u;
 
-const AGENT_FLOATS = 96u;
-const GRID = 16;
-const CELLS = 256u;
+const AGENT_FLOATS = ${AGENT_FLOATS}u;
+const GRID = ${GRID};
+const GRID_U = ${GRID}u;
+const CELLS = ${CELLS}u;
+const MASK_WORDS = ${MASK_WORDS}u;
 const STALL = 200.0;
 const MAX_MOVES = 10000.0;
 
@@ -68,6 +71,7 @@ fn rightOf(d: u32) -> u32 {
 }
 
 fn bodyBit(b: u32, cell: u32) -> u32 {
+  if (cell >= CELLS) { return 1u; }
   let word = bitcast<u32>(agents[b + A_MASK + (cell >> 5u)]);
   return (word >> (cell & 31u)) & 1u;
 }
@@ -81,16 +85,11 @@ fn setBodyBit(b: u32, cell: u32, on: bool) {
 }
 
 fn ringRead(b: u32, idx: u32) -> u32 {
-  let word = bitcast<u32>(agents[b + A_RING + (idx >> 2u)]);
-  return (word >> ((idx & 3u) * 8u)) & 0xffu;
+  return bitcast<u32>(agents[b + A_RING + idx]);
 }
 
 fn ringWrite(b: u32, idx: u32, val: u32) {
-  let wb = b + A_RING + (idx >> 2u);
-  let shift = (idx & 3u) * 8u;
-  var word = bitcast<u32>(agents[wb]);
-  word = (word & ~(0xffu << shift)) | (val << shift);
-  agents[wb] = bitcast<f32>(word);
+  agents[b + A_RING + idx] = bitcast<f32>(val);
 }
 
 fn nextRand(state: u32) -> u32 {
@@ -126,9 +125,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let cS = vec2i(i32(hx + dvS.x), i32(hy + dvS.y));
   let cL = vec2i(i32(hx + dvL.x), i32(hy + dvL.y));
   let cR = vec2i(i32(hx + dvR.x), i32(hy + dvR.y));
-  inputs[0] = select(0.0, 1.0, cS.x < 0 || cS.x >= GRID || cS.y < 0 || cS.y >= GRID || bodyBit(b, u32(clamp(cS.y * GRID + cS.x, 0, 255))) == 1u);
-  inputs[1] = select(0.0, 1.0, cL.x < 0 || cL.x >= GRID || cL.y < 0 || cL.y >= GRID || bodyBit(b, u32(clamp(cL.y * GRID + cL.x, 0, 255))) == 1u);
-  inputs[2] = select(0.0, 1.0, cR.x < 0 || cR.x >= GRID || cR.y < 0 || cR.y >= GRID || bodyBit(b, u32(clamp(cR.y * GRID + cR.x, 0, 255))) == 1u);
+  inputs[0] = select(0.0, 1.0, cS.x < 0 || cS.x >= GRID || cS.y < 0 || cS.y >= GRID || bodyBit(b, u32(clamp(cS.y * GRID + cS.x, 0, GRID * GRID - 1))) == 1u);
+  inputs[1] = select(0.0, 1.0, cL.x < 0 || cL.x >= GRID || cL.y < 0 || cL.y >= GRID || bodyBit(b, u32(clamp(cL.y * GRID + cL.x, 0, GRID * GRID - 1))) == 1u);
+  inputs[2] = select(0.0, 1.0, cR.x < 0 || cR.x >= GRID || cR.y < 0 || cR.y >= GRID || bodyBit(b, u32(clamp(cR.y * GRID + cR.x, 0, GRID * GRID - 1))) == 1u);
   // 3-5: free distance straight/left/right (/16)
   for (var d = 0u; d < 3u; d++) {
     let dv = select(dvS, select(dvL, dvR, d == 2u), d == 1u);
@@ -139,11 +138,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (cc < 0 || cc >= GRID || rr < 0 || rr >= GRID || bodyBit(b, u32(rr * GRID + cc)) == 1u) { break; }
       dist = s;
     }
-    inputs[3u + d] = f32(dist) / 16.0;
+  inputs[3u + d] = f32(dist) / f32(GRID);
   }
-  // 6-7: apple delta (/16)
-  inputs[6] = clamp((ax - hx) / 16.0, -1.0, 1.0);
-  inputs[7] = clamp((ay - hy) / 16.0, -1.0, 1.0);
+  // 6-7: apple delta (/grid)
+  inputs[6] = clamp((ax - hx) / f32(GRID), -1.0, 1.0);
+  inputs[7] = clamp((ay - hy) / f32(GRID), -1.0, 1.0);
   // 8-9: current direction vector
   inputs[8] = dvS.x;
   inputs[9] = dvS.y;
@@ -151,10 +150,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   inputs[10] = agents[b + A_LENGTH] / 256.0;
   // 11: stall clock (/200)
   inputs[11] = clamp(agents[b + A_SINCE_EAT] / STALL, 0.0, 1.0);
-  // 12-13: tail delta (/16) — long snakes must not lose their own tail
+  // 12-13: tail delta (/grid) — long snakes must not lose their own tail
   let tailCell = ringRead(b, u32(agents[b + A_RING_TAIL]));
-  inputs[12] = clamp((f32(tailCell % 16u) - hx) / 16.0, -1.0, 1.0);
-  inputs[13] = clamp((f32(tailCell / 16u) - hy) / 16.0, -1.0, 1.0);
+  inputs[12] = clamp((f32(tailCell % GRID_U) - hx) / f32(GRID), -1.0, 1.0);
+  inputs[13] = clamp((f32(tailCell / GRID_U) - hy) / f32(GRID), -1.0, 1.0);
 
   // --- Forward pass [14 -> 12 -> 3]: relu hidden, linear outputs, argmax turn. ---
   var offset = i * 219u;
@@ -213,8 +212,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     for (var k = 0u; k < CELLS; k++) {
       let cand = (spawn + k) % CELLS;
       if (bodyBit(b, cand) == 0u) {
-        agents[b + A_APPLE_X] = f32(cand % 16u);
-        agents[b + A_APPLE_Y] = f32(cand / 16u);
+        agents[b + A_APPLE_X] = f32(cand % GRID_U);
+        agents[b + A_APPLE_Y] = f32(cand / GRID_U);
         break;
       }
     }

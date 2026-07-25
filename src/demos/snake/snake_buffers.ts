@@ -4,14 +4,15 @@ import { createBufferWithData } from '../../webgpu/utils';
 export const SNAKE_GENOME_SIZE = 219;
 
 /** Board is 20x20 cells; world units are cells. */
-export const GRID = 16;
-export const CELLS = 256;
+export const GRID = 20;
+export const CELLS = GRID * GRID;
+export const MASK_WORDS = Math.ceil(CELLS / 32);
 
 /**
- * Agent state, 128 f32 = 512 bytes per agent. Raw-indexed (no WGSL struct) so
- * CPU/GPU layouts can't drift. u32 fields are bit patterns (bitcast in WGSL).
+ * Agent state. Raw-indexed (no WGSL struct) so CPU/GPU layouts can't drift.
+ * u32 fields are bit patterns (bitcast in WGSL).
  */
-export const AGENT_FLOATS = 96;
+export const AGENT_FLOATS = 27 + CELLS;
 export const A = {
   headX: 0,
   headY: 1,
@@ -26,8 +27,8 @@ export const A = {
   ringHead: 10, // next write slot in the segment ring
   ringTail: 11, // oldest segment slot
   rng: 12, // u32 xorshift state
-  bodyMask: 14, // 8 u32 words: bit (y*16+x) = cell occupied by the snake
-  ring: 22, // 64 u32 = 256 bytes, one packed segment (y*16+x) per byte (fits: max 255)
+  bodyMask: 14, // 13 u32 words: bit (y*20+x) = cell occupied by the snake
+  ring: 27, // one u32 cell id per segment
 } as const;
 
 export const STALL_MOVES = 200; // no apple for this many moves ends the game
@@ -38,16 +39,17 @@ export const OBSTACLES: ReadonlyArray<readonly [number, number]> = [
   // Top-left L
   [2, 2], [3, 2], [4, 2], [2, 3], [2, 4],
   // Top-right L
-  [13, 2], [12, 2], [11, 2], [13, 3], [13, 4],
+  [16, 2], [17, 2], [18, 2], [18, 3], [18, 4],
   // Bottom-right L
-  [13, 13], [12, 13], [11, 13], [13, 12], [13, 11],
+  [16, 18], [17, 18], [18, 18], [18, 17], [18, 16],
   // Center C
-  [6, 5], [7, 5], [8, 5], [6, 6], [6, 7], [7, 7], [8, 7], [9, 7],
+  [8, 9], [9, 9], [10, 9], [8, 10], [9, 10], [10, 10],
+  [8, 11], [8, 12], [8, 13], [9, 13], [10, 13], [11, 13], [12, 13], [13, 13],
 ];
 
-/** Obstacle bits in body-mask layout (bit y*16+x of 8 u32 words). */
+/** Obstacle bits in body-mask layout. */
 function obstacleMask(): Uint32Array<ArrayBuffer> {
-  const bits = new Uint32Array(8);
+  const bits = new Uint32Array(MASK_WORDS);
   for (const [x, y] of OBSTACLES) {
     const cell = y * GRID + x;
     bits[cell >>> 5] |= 1 << (cell & 31);
@@ -63,18 +65,18 @@ export interface SnakeBuffers {
 }
 
 /**
- * All agents: length-3 snake at the center heading right; apple at a
+ * All agents: length-8 snake near the upper-right heading up; apple at a
  * deterministic per-agent spot away from the body; per-agent rng seed.
  */
 export function initialAgentStates(count: number): Float32Array<ArrayBuffer> {
   const states = new Float32Array(count * AGENT_FLOATS);
   for (let i = 0; i < count; i++) {
     const o = i * AGENT_FLOATS;
-    states[o + A.headX] = 8;
-    states[o + A.headY] = 8;
-    states[o + A.dir] = 3; // right
-    states[o + A.length] = 3;
-    states[o + A.ringHead] = 3;
+    states[o + A.headX] = 13;
+    states[o + A.headY] = 4;
+    states[o + A.dir] = 0; // up
+    states[o + A.length] = 8;
+    states[o + A.ringHead] = 8;
     states[o + A.ringTail] = 0;
     new Uint32Array(states.buffer)[o + A.rng] = ((i + 1) * 2654435761) >>> 0;
 
@@ -82,15 +84,14 @@ export function initialAgentStates(count: number): Float32Array<ArrayBuffer> {
     // Static obstacles: OR'd into the body mask, so collision, danger inputs,
     // apple spawning, and rendering all respect them for free.
     const obstacles = obstacleMask();
-    for (let w = 0; w < 8; w++) u32[o + A.bodyMask + w] |= obstacles[w];
-    // Body (6,8),(7,8),(8,8): mask bits + ring bytes (tail first).
-    for (let s = 0; s < 3; s++) {
-      const cx = 6 + s;
-      const cy = 8;
+    for (let w = 0; w < MASK_WORDS; w++) u32[o + A.bodyMask + w] |= obstacles[w];
+    // Body (13,11)..(13,4): mask bits + ring cell ids (tail first).
+    for (let s = 0; s < 8; s++) {
+      const cx = 13;
+      const cy = 11 - s;
       const cell = cy * GRID + cx;
       u32[o + A.bodyMask + (cell >>> 5)] |= 1 << (cell & 31);
-      const w = o + A.ring + (s >>> 2);
-      u32[w] |= cell << ((s & 3) * 8);
+      u32[o + A.ring + s] = cell;
     }
     // Apple: deterministic per agent, off the initial body and obstacles.
     let ax = (i * 37 + 13) % GRID;

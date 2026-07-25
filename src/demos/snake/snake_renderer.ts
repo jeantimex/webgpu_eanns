@@ -1,16 +1,20 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
-import { GRID, type SnakeBuffers } from './snake_buffers';
+import { A, AGENT_FLOATS, CELLS, GRID, OBSTACLES, type SnakeBuffers } from './snake_buffers';
 
-// Retro LCD look (colors sampled from the reference): light gray blocks on a
-// darker olive field, a dark frame around the board, black-bordered body
-// blocks, light head with two eyes, red-ringed apple.
-const COLOR_SEAM: [number, number, number] = [0.62, 0.64, 0.56]; // #9ea390 between cells
-const COLOR_BLOCK: [number, number, number] = [0.67, 0.69, 0.61]; // #aab09b empty blocks
-const COLOR_BORDER: [number, number, number] = [0.18, 0.18, 0.16]; // #2e2e2a block borders + frame
-const COLOR_BODY: [number, number, number] = [0.05, 0.04, 0.04]; // #0c0a0a block fill
-const COLOR_HEAD: [number, number, number] = [0.62, 0.64, 0.57]; // #9fa491 head
-const COLOR_APPLE_BORDER: [number, number, number] = [0.83, 0.24, 0.16];
-const COLOR_APPLE_FILL: [number, number, number] = [0.61, 0.19, 0.12]; // #9c301e
+const COLOR_PAGE: [number, number, number] = [0.08, 0.12, 0.12];
+const COLOR_BOARD: [number, number, number] = [0.63, 0.67, 0.58]; // #a1ab94
+const COLOR_CELL_EDGE: [number, number, number] = [0.56, 0.61, 0.52]; // #909c84
+const COLOR_CELL_FACE: [number, number, number] = [0.68, 0.72, 0.62]; // #adb89e
+const COLOR_CELL_INSET: [number, number, number] = [0.62, 0.67, 0.56]; // #9faa8f
+const COLOR_DARK_OUTLINE: [number, number, number] = [0.09, 0.09, 0.08];
+const COLOR_BODY: [number, number, number] = [0.03, 0.025, 0.025];
+const COLOR_HEAD: [number, number, number] = [0.68, 0.72, 0.62];
+const COLOR_APPLE_BORDER: [number, number, number] = [0.86, 0.18, 0.11];
+const COLOR_APPLE_FILL: [number, number, number] = [0.58, 0.11, 0.08];
+
+const obstacleCases = OBSTACLES
+  .map(([x, y]) => `  if (cell == ${y * GRID + x}u) { return true; }`)
+  .join('\n');
 
 const shader = /* wgsl */ `
 struct Uniforms {
@@ -27,13 +31,13 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uni: Uniforms;
 @group(0) @binding(1) var<storage, read> agents: array<f32>;
 
-const AGENT_FLOATS = 96u;
-const A_HEAD_X = 0u;
-const A_HEAD_Y = 1u;
-const A_DIR = 2u;
-const A_APPLE_X = 8u;
-const A_APPLE_Y = 9u;
-const A_MASK = 14u;
+const AGENT_FLOATS = ${AGENT_FLOATS}u;
+const A_HEAD_X = ${A.headX}u;
+const A_HEAD_Y = ${A.headY}u;
+const A_DIR = ${A.dir}u;
+const A_APPLE_X = ${A.appleX}u;
+const A_APPLE_Y = ${A.appleY}u;
+const A_MASK = ${A.bodyMask}u;
 
 const QUAD = array<vec2f, 6>(
   vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
@@ -45,13 +49,17 @@ struct VertexOutput {
   @location(0) color: vec4f,
 };
 
-// Quad centered on a cell; size is in cell units.
-fn cellQuad(c: vec2f, center: vec2f, size: f32, color: vec4f) -> VertexOutput {
+fn quad(c: vec2f, center: vec2f, size: vec2f, color: vec4f) -> VertexOutput {
   var output: VertexOutput;
   let world = (center + (c - 0.5) * size) / ${GRID}.0;
   output.position = vec4f(world.x * uni.scaleX + uni.offsetX, world.y * uni.scaleY + uni.offsetY, 0.0, 1.0);
   output.color = color;
   return output;
+}
+
+// Quad centered on a cell; size is in cell units.
+fn cellQuad(c: vec2f, center: vec2f, size: f32, color: vec4f) -> VertexOutput {
+  return quad(c, center, vec2f(size, size), color);
 }
 
 fn deadOut() -> VertexOutput {
@@ -75,44 +83,96 @@ fn bodyCell(base: u32, ii: u32) -> bool {
   return ((word >> (ii & 31u)) & 1u) == 1u;
 }
 
+fn obstacleCell(cell: u32) -> bool {
+${obstacleCases}
+  return false;
+}
+
 @vertex
 fn vsFrame(@builtin(vertex_index) vi: u32) -> VertexOutput {
-  // Dark frame: one cell thick around the 16x16 field.
-  return cellQuad(QUAD[vi], vec2f(8.0, 8.0), 18.0, vec4f(${COLOR_BORDER}, 1.0));
+  return cellQuad(QUAD[vi], vec2f(${GRID / 2}.0, ${GRID / 2}.0), ${GRID}.0, vec4f(${COLOR_CELL_EDGE}, 1.0));
 }
 
 @vertex
 fn vsBoard(@builtin(vertex_index) vi: u32) -> VertexOutput {
-  return cellQuad(QUAD[vi], vec2f(8.0, 8.0), 16.0, vec4f(${COLOR_SEAM}, 1.0));
+  return cellQuad(QUAD[vi], vec2f(${GRID / 2}.0, ${GRID / 2}.0), ${GRID - 0.12}, vec4f(${COLOR_BOARD}, 1.0));
 }
 
 @vertex
-fn vsBg(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+fn vsCellEdge(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
   let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
-  return cellQuad(QUAD[vi], center, 0.88, vec4f(${COLOR_BLOCK}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.86, vec4f(${COLOR_CELL_EDGE}, 1.0));
+}
+
+@vertex
+fn vsCellFace(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
+  return cellQuad(QUAD[vi], center, 0.68, vec4f(${COLOR_CELL_FACE}, 1.0));
+}
+
+@vertex
+fn vsCellInset(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
+  return cellQuad(QUAD[vi], center, 0.48, vec4f(${COLOR_CELL_INSET}, 1.0));
+}
+
+@vertex
+fn vsObstacleBorder(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  if (!obstacleCell(ii)) { return deadOut(); }
+  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
+  return cellQuad(QUAD[vi], center, 0.84, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
+}
+
+@vertex
+fn vsObstaclePad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  if (!obstacleCell(ii)) { return deadOut(); }
+  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
+  return cellQuad(QUAD[vi], center, 0.72, vec4f(${COLOR_CELL_FACE}, 1.0));
+}
+
+@vertex
+fn vsObstacleFill(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  if (!obstacleCell(ii)) { return deadOut(); }
+  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
+  return cellQuad(QUAD[vi], center, 0.62, vec4f(${COLOR_BODY}, 1.0));
 }
 
 @vertex
 fn vsBodyBorder(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
-  if (!bodyCell(base, ii)) { return deadOut(); }
+  if (!bodyCell(base, ii) || obstacleCell(ii)) { return deadOut(); }
   let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
-  return cellQuad(QUAD[vi], center, 1.0, vec4f(${COLOR_BORDER}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.84, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
+}
+
+@vertex
+fn vsBodyPad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  let base = uni.bestIndex * AGENT_FLOATS;
+  if (!bodyCell(base, ii) || obstacleCell(ii)) { return deadOut(); }
+  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
+  return cellQuad(QUAD[vi], center, 0.70, vec4f(${COLOR_CELL_FACE}, 1.0));
 }
 
 @vertex
 fn vsBodyFill(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
-  if (!bodyCell(base, ii)) { return deadOut(); }
+  if (!bodyCell(base, ii) || obstacleCell(ii)) { return deadOut(); }
   let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
-  return cellQuad(QUAD[vi], center, 0.74, vec4f(${COLOR_BODY}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.50, vec4f(${COLOR_BODY}, 1.0));
+}
+
+@vertex
+fn vsHeadBorder(@builtin(vertex_index) vi: u32) -> VertexOutput {
+  let base = uni.bestIndex * AGENT_FLOATS;
+  let center = vec2f(agents[base + A_HEAD_X] + 0.5, agents[base + A_HEAD_Y] + 0.5);
+  return cellQuad(QUAD[vi], center, 0.88, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
 }
 
 @vertex
 fn vsHead(@builtin(vertex_index) vi: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
   let center = vec2f(agents[base + A_HEAD_X] + 0.5, agents[base + A_HEAD_Y] + 0.5);
-  return cellQuad(QUAD[vi], center, 0.92, vec4f(${COLOR_HEAD}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.72, vec4f(${COLOR_HEAD}, 1.0));
 }
 
 // Two eyes, placed perpendicular to the heading.
@@ -121,24 +181,37 @@ fn vsEyes(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
   let base = uni.bestIndex * AGENT_FLOATS;
   let fwd = dirVec(u32(agents[base + A_DIR]));
   let perp = vec2f(-fwd.y, fwd.x);
-  let side = select(-0.2, 0.2, ii == 1u);
+  let side = select(-0.18, 0.18, ii == 1u);
   let center = vec2f(agents[base + A_HEAD_X] + 0.5, agents[base + A_HEAD_Y] + 0.5)
     + fwd * 0.16 + perp * side;
-  return cellQuad(QUAD[vi], center, 0.17, vec4f(${COLOR_BODY}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.14, vec4f(${COLOR_BODY}, 1.0));
+}
+
+@vertex
+fn vsAntenna(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  let base = uni.bestIndex * AGENT_FLOATS;
+  let fwd = dirVec(u32(agents[base + A_DIR]));
+  let perp = vec2f(-fwd.y, fwd.x);
+  let head = vec2f(agents[base + A_HEAD_X] + 0.5, agents[base + A_HEAD_Y] + 0.5);
+  if (ii == 0u) {
+    return quad(QUAD[vi], head + fwd * 0.55, abs(fwd) * 0.32 + abs(perp) * 0.08, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
+  }
+  let side = select(-0.1, 0.1, ii == 2u);
+  return quad(QUAD[vi], head + fwd * 0.73 + perp * side, abs(fwd) * 0.08 + abs(perp) * 0.12, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
 }
 
 @vertex
 fn vsAppleBorder(@builtin(vertex_index) vi: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
   let center = vec2f(agents[base + A_APPLE_X] + 0.5, agents[base + A_APPLE_Y] + 0.5);
-  return cellQuad(QUAD[vi], center, 0.94, vec4f(${COLOR_APPLE_BORDER}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.72, vec4f(${COLOR_APPLE_BORDER}, 1.0));
 }
 
 @vertex
 fn vsAppleFill(@builtin(vertex_index) vi: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
   let center = vec2f(agents[base + A_APPLE_X] + 0.5, agents[base + A_APPLE_Y] + 0.5);
-  return cellQuad(QUAD[vi], center, 0.62, vec4f(${COLOR_APPLE_FILL}, 1.0));
+  return cellQuad(QUAD[vi], center, 0.42, vec4f(${COLOR_APPLE_FILL}, 1.0));
 }
 
 @fragment
@@ -147,7 +220,25 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
 }
 `;
 
-const ENTRIES = ['vsFrame', 'vsBoard', 'vsBg', 'vsBodyBorder', 'vsBodyFill', 'vsHead', 'vsEyes', 'vsAppleBorder', 'vsAppleFill'] as const;
+const ENTRIES = [
+  'vsFrame',
+  'vsBoard',
+  'vsCellEdge',
+  'vsCellFace',
+  'vsCellInset',
+  'vsObstacleBorder',
+  'vsObstaclePad',
+  'vsObstacleFill',
+  'vsBodyBorder',
+  'vsBodyPad',
+  'vsBodyFill',
+  'vsHeadBorder',
+  'vsHead',
+  'vsEyes',
+  'vsAntenna',
+  'vsAppleBorder',
+  'vsAppleFill',
+] as const;
 type Entry = (typeof ENTRIES)[number];
 
 /** Best-agent board in the retro LCD style. No textures. */
@@ -229,32 +320,47 @@ export class SnakeRenderer {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: this.context.getCurrentTexture().createView(),
-        clearValue: { r: 0.06, g: 0.09, b: 0.14, a: 1 }, // page margin, outside the frame
+        clearValue: { r: COLOR_PAGE[0], g: COLOR_PAGE[1], b: COLOR_PAGE[2], a: 1 },
         loadOp: 'clear',
         storeOp: 'store',
       }],
     });
-    // Clip to board + 1-cell frame (clamped to the canvas: scissor must not
+    // Clip to the board (clamped to the canvas: scissor must not
     // exceed the attachment or the whole pass is invalidated).
-    const cell = scale / GRID;
-    const sx = Math.max(0, Math.floor(marginX - cell));
-    const sy = Math.max(0, Math.floor(marginY - cell));
-    pass.setScissorRect(sx, sy, Math.min(Math.ceil(scale + 2 * cell), cw - sx), Math.min(Math.ceil(scale + 2 * cell), ch - sy));
+    const sx = Math.max(0, Math.floor(marginX));
+    const sy = Math.max(0, Math.floor(marginY));
+    pass.setScissorRect(sx, sy, Math.min(Math.ceil(scale), cw - sx), Math.min(Math.ceil(scale), ch - sy));
     pass.setBindGroup(0, this.bindGroup);
     pass.setPipeline(this.pipelines.vsFrame);
     pass.draw(6);
     pass.setPipeline(this.pipelines.vsBoard);
     pass.draw(6);
-    pass.setPipeline(this.pipelines.vsBg);
-    pass.draw(6, 256);
+    pass.setPipeline(this.pipelines.vsCellEdge);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsCellFace);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsCellInset);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsObstacleBorder);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsObstaclePad);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsObstacleFill);
+    pass.draw(6, CELLS);
     pass.setPipeline(this.pipelines.vsBodyBorder);
-    pass.draw(6, 256);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsBodyPad);
+    pass.draw(6, CELLS);
     pass.setPipeline(this.pipelines.vsBodyFill);
-    pass.draw(6, 256);
+    pass.draw(6, CELLS);
+    pass.setPipeline(this.pipelines.vsHeadBorder);
+    pass.draw(6);
     pass.setPipeline(this.pipelines.vsHead);
     pass.draw(6);
     pass.setPipeline(this.pipelines.vsEyes);
     pass.draw(6, 2);
+    pass.setPipeline(this.pipelines.vsAntenna);
+    pass.draw(6, 3);
     pass.setPipeline(this.pipelines.vsAppleBorder);
     pass.draw(6);
     pass.setPipeline(this.pipelines.vsAppleFill);
