@@ -1,3 +1,4 @@
+import { nextCrossoverGeneration } from '../../utils/ga';
 import { mulberry32, type Rng } from '../../utils/rng';
 import {
   A,
@@ -13,49 +14,31 @@ import { autosavePacmanBest } from './pacman_model';
 
 const WEIGHT_MIN = 1e-5;
 const WEIGHT_MAX = 20;
-const ELITE_COUNT = 5;
-const TOURNAMENT_SIZE = 5;
-const CROSSOVER_PROB = 0.7;
-const CROSSOVER_ALPHA = 0.7;
-const MUTATION_PROB = 0.6;
-
 function randomWeight(rng: Rng): number {
   return WEIGHT_MIN + rng() * (WEIGHT_MAX - WEIGHT_MIN);
 }
 
-function tournamentPick(population: Float64Array[], fitnesses: ArrayLike<number>, rng: Rng): Float64Array {
-  let best = Math.floor(rng() * population.length);
-  for (let k = 1; k < Math.min(TOURNAMENT_SIZE, population.length); k++) {
-    const candidate = Math.floor(rng() * population.length);
-    if (fitnesses[candidate] > fitnesses[best]) best = candidate;
-  }
-  return population[best];
-}
+function randomVectorSeededNetwork(rng: Rng): Float64Array {
+  const genome = new Float64Array(PACMAN_GENOME_SIZE);
+  const dirs = [
+    [0, -1], // up
+    [1, 0], // right
+    [0, 1], // down
+    [-1, 0], // left
+  ] as const;
 
-function nextWeightedVectorGeneration(population: Float64Array[], fitnesses: ArrayLike<number>, rng: Rng): Float64Array[] {
-  const order = population.map((_, i) => i).sort((a, b) => fitnesses[b] - fitnesses[a]);
-  const next: Float64Array[] = [];
-  for (let i = 0; i < Math.min(ELITE_COUNT, population.length); i++) {
-    next.push(population[order[i]].slice());
-  }
-
-  while (next.length < population.length) {
-    const p1 = tournamentPick(population, fitnesses, rng);
-    const p2 = tournamentPick(population, fitnesses, rng);
-    const child = p1.slice();
-    if (rng() <= CROSSOVER_PROB) {
-      const cut = Math.min(PACMAN_GENOME_SIZE, Math.floor(rng() * PACMAN_GENOME_SIZE) + 1);
-      for (let k = cut; k < PACMAN_GENOME_SIZE; k++) {
-        child[k] = CROSSOVER_ALPHA * p1[k] + (1 - CROSSOVER_ALPHA) * p2[k];
+  for (let mode = 0; mode < 2; mode++) {
+    for (let feature = 0; feature < 4; feature++) {
+      const w = randomWeight(rng);
+      const xInput = mode * 8 + feature * 2;
+      const yInput = xInput + 1;
+      for (let out = 0; out < 4; out++) {
+        genome[xInput * 4 + out] = w * dirs[out][0];
+        genome[yInput * 4 + out] = w * dirs[out][1];
       }
     }
-    if (rng() <= MUTATION_PROB) {
-      child[Math.floor(rng() * 4)] = randomWeight(rng);
-      child[4 + Math.floor(rng() * 4)] = randomWeight(rng);
-    }
-    next.push(child);
   }
-  return next;
+  return genome;
 }
 
 export interface BestAgentSnapshot {
@@ -102,9 +85,7 @@ export class PacmanEvolution {
     this.rng = mulberry32(seed);
     this.displayIndex = populationSize;
     this.genomes = Array.from({ length: buffers.totalAgents }, () => {
-      const g = new Float64Array(PACMAN_GENOME_SIZE);
-      for (let k = 0; k < PACMAN_GENOME_SIZE; k++) g[k] = randomWeight(this.rng);
-      return g;
+      return randomVectorSeededNetwork(this.rng);
     });
     this.bestGenome = new Float64Array(this.genomes[0]);
     this.genomes[this.displayIndex].set(this.bestGenome);
@@ -257,7 +238,13 @@ export class PacmanEvolution {
           autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore);
         }
       }
-      const next = nextWeightedVectorGeneration(this.genomes.slice(0, this.populationSize), fitnesses, this.rng);
+      const next = nextCrossoverGeneration(
+        this.genomes.slice(0, this.populationSize),
+        fitnesses,
+        this.rng,
+        PACMAN_TOPOLOGY,
+        { eliteCount: 8, mutateRate: 0.06, sigma: 0.8, clamp: WEIGHT_MAX },
+      );
       this.genomes = [...next, new Float64Array(this.bestGenome)];
       this.generation++;
       this.episodeSeed = Math.floor(this.rng() * 0xffffffff) >>> 0;

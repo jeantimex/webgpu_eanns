@@ -1,12 +1,16 @@
 import { createBufferWithData } from '../../webgpu/utils';
 import { mazeWallBits, pelletMaskInit, pelletTiles } from './maze';
 
-export const PACMAN_FEATURES = 4;
-export const PACMAN_MODES = 2;
-export const PACMAN_TOPOLOGY = [PACMAN_FEATURES, PACMAN_MODES] as const;
+export const PACMAN_INPUTS = 16;
+export const PACMAN_OUTPUTS = 4;
+export const PACMAN_TOPOLOGY = [PACMAN_INPUTS, PACMAN_OUTPUTS] as const;
 
-/** Genome layout: 4 normal-mode feature weights, then 4 powered-mode feature weights. */
-export const PACMAN_GENOME_SIZE = PACMAN_FEATURES * PACMAN_MODES;
+/**
+ * Genome layout [16 -> 4], input-major row-major with bias row last.
+ * Inputs are 4 feature vectors x/y in normal mode, then the same 4 vectors in
+ * powered mode: pellet, power pellet, ghost repulsion, nearest ghost.
+ */
+export const PACMAN_GENOME_SIZE = PACMAN_INPUTS * PACMAN_OUTPUTS + PACMAN_OUTPUTS;
 
 /**
  * Agent state, 68 f32 = 272 bytes per agent. Raw-indexed (no WGSL struct) so the

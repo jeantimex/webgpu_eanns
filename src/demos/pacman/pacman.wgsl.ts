@@ -15,7 +15,7 @@ struct SimParams {
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
-@group(0) @binding(1) var<storage, read> genomes: array<f32>; // [normal feature weights(4), powered feature weights(4)]
+@group(0) @binding(1) var<storage, read> genomes: array<f32>; // [16 feature inputs -> 4 direction outputs]
 @group(0) @binding(2) var<storage, read_write> agents: array<f32>;
 @group(0) @binding(3) var<storage, read> mazeBits: array<u32>; // 31 words, bit c = wall
 
@@ -192,10 +192,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let pc = i32(floor(px + 0.5));
   let pr = i32(floor(py + 0.5));
 
-  // --- Weighted-vector controller from MatheusPaixaoG/Pacman-with-GA. ---
-  // Genome = [normal pellet, normal power pellet, normal ghost repulsion,
-  // normal nearest ghost, powered pellet, powered power pellet,
-  // powered ghost repulsion, powered nearest ghost].
+  // --- NN inputs ported from MatheusPaixaoG/Pacman-with-GA. ---
+  // Four feature vectors: nearest pellet, nearest power pellet, ghost
+  // repulsion, nearest ghost. The first 8 inputs are active in normal mode;
+  // the last 8 are active in powered mode, so the network can evolve separate
+  // behavior for chasing vs avoiding ghosts.
   var pelletVec = vec2f(0.0);
   var pelletBest = 1e9;
   var powerVec = vec2f(0.0);
@@ -251,21 +252,28 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] - (6.0 - sqrt(nearestGhostD)) * 0.08;
   }
 
-  let genomeBase = i * 8u + select(0u, 4u, agents[b + A_FRIGHT] > 0.0);
-  let actionVec =
-    pelletVec * genomes[genomeBase] +
-    powerVec * genomes[genomeBase + 1u] +
-    ghostRepelVec * genomes[genomeBase + 2u] +
-    nearestGhostVec * genomes[genomeBase + 3u];
+  var inputs: array<f32, 16>;
+  let inputBase = select(0u, 8u, agents[b + A_FRIGHT] > 0.0);
+  inputs[inputBase] = pelletVec.x;
+  inputs[inputBase + 1u] = pelletVec.y;
+  inputs[inputBase + 2u] = powerVec.x;
+  inputs[inputBase + 3u] = powerVec.y;
+  inputs[inputBase + 4u] = ghostRepelVec.x;
+  inputs[inputBase + 5u] = ghostRepelVec.y;
+  inputs[inputBase + 6u] = nearestGhostVec.x;
+  inputs[inputBase + 7u] = nearestGhostVec.y;
 
   var outputs: array<f32, 4>;
   let actionToDir = array<u32, 4>(0u, 3u, 1u, 2u);
   var bestOut = -1e30;
   var bestAction = 0u;
+  let genomeBase = i * 68u;
   for (var j = 0u; j < 4u; j++) {
     let candDir = actionToDir[j];
-    let dv = dirVec(candDir);
-    var sum = dot(actionVec, dv);
+    var sum = genomes[genomeBase + 64u + j];
+    for (var k = 0u; k < 16u; k++) {
+      sum += inputs[k] * genomes[genomeBase + k * 4u + j];
+    }
     // Inertia bias: slightly prefer continuing in current direction
     if (candDir == pdir) { sum += 0.2; }
     // Ghost hazard mask: heavily penalize moving into an immediately adjacent ghost

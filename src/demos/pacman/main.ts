@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const hud = createHud();
   const networkPanel = new NetworkPanel(PacmanEvolution.topology, {
     variant: 'snake',
-    outputLabels: ['NORMAL', 'POWER'],
+    outputLabels: ['UP', 'RIGHT', 'DOWN', 'LEFT'],
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
   });
 
