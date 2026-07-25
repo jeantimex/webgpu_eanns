@@ -227,7 +227,7 @@
             <span class="tag">Blend Crossover</span>
           </div>
         </div>
-        <a href="/track.html?pop=1000&speed=16&track=track1" class="btn btn-primary">
+        <a href="/track.html?pop=1000&speed=1&track=track1" class="btn btn-primary">
           Launch Car Racing Demo &rarr;
         </a>
       </div>
@@ -247,7 +247,7 @@
             <span class="tag">64x Real-Time</span>
           </div>
         </div>
-        <a href="/flappy-bird.html?pop=1000&speed=16" class="btn btn-primary" style="background: #10b981; box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.35);">
+        <a href="/flappy-bird.html?pop=1000&speed=1" class="btn btn-primary" style="background: #10b981; box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.35);">
           Launch Flappy Bird Demo &rarr;
         </a>
       </div>
@@ -267,8 +267,48 @@
             <span class="tag">64x Real-Time</span>
           </div>
         </div>
-        <a href="/dino.html?pop=1000&speed=16" class="btn btn-primary" style="background: #f59e0b; box-shadow: 0 4px 14px 0 rgba(245, 158, 11, 0.35);">
+        <a href="/dino.html?pop=1000&speed=1" class="btn btn-primary" style="background: #f59e0b; box-shadow: 0 4px 14px 0 rgba(245, 158, 11, 0.35);">
           Launch Chrome Dino Demo &rarr;
+        </a>
+      </div>
+
+      <!-- Pac-Man Card -->
+      <div class="card" style="--card-accent: #eab308;">
+        <div>
+          <div class="card-icon">🟡</div>
+          <h2 class="card-title">Pac-Man</h2>
+          <p class="card-desc">
+            Every agent plays a full arcade game — 4 ghost AIs, power pellets, scatter/chase waves, 3 lives — simulated per-thread in a WebGPU compute shader. Fitness is the arcade score.
+          </p>
+          <div class="tag-group">
+            <span class="tag">Full Ghost AI</span>
+            <span class="tag">244 Pellets/Agent</span>
+            <span class="tag">Arcade Scoring</span>
+            <span class="tag">64x Real-Time</span>
+          </div>
+        </div>
+        <a href="/pacman.html?pop=1000&speed=1" class="btn btn-primary" style="background: #eab308; box-shadow: 0 4px 14px 0 rgba(234, 179, 8, 0.35);">
+          Launch Pac-Man Demo &rarr;
+        </a>
+      </div>
+
+      <!-- Snake Card -->
+      <div class="card" style="--card-accent: #22c55e;">
+        <div>
+          <div class="card-icon">🐍</div>
+          <h2 class="card-title">Snake</h2>
+          <p class="card-desc">
+            Hundreds of snakes learn to chase apples without biting themselves. Each agent's body lives in a per-thread bitmask on the GPU; the network steers with just three relative moves: left, straight, right.
+          </p>
+          <div class="tag-group">
+            <span class="tag">Turn-Based</span>
+            <span class="tag">Bitmask Body</span>
+            <span class="tag">Relative Actions</span>
+            <span class="tag">On-GPU RNG</span>
+          </div>
+        </div>
+        <a href="/snake.html?pop=1000&speed=1" class="btn btn-primary" style="background: #22c55e; box-shadow: 0 4px 14px 0 rgba(34, 197, 94, 0.35);">
+          Launch Snake Demo &rarr;
         </a>
       </div>
     </div>

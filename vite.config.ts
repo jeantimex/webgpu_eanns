@@ -9,6 +9,8 @@ export default defineConfig({
         track: resolve(__dirname, 'track.html'),
         flappy: resolve(__dirname, 'flappy-bird.html'),
         dino: resolve(__dirname, 'dino.html'),
+        pacman: resolve(__dirname, 'pacman.html'),
+        snake: resolve(__dirname, 'snake.html'),
       },
     },
   },

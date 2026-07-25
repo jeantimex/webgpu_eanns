@@ -44,10 +44,10 @@ export function currentSettings(tracks?: readonly string[]): Settings {
   params.delete('population');
   localStorage.setItem(POP_KEY, String(population));
 
-  // 4. Speed: ?speed=1..64
+  // 4. Speed: ?speed=1..100
   const rawSpeed = params.get('speed') ?? localStorage.getItem(SPEED_KEY);
   const parsedSpeed = Number(rawSpeed);
-  const speed = Math.min(64, Math.max(1, Number.isFinite(parsedSpeed) && parsedSpeed > 0 ? Math.floor(parsedSpeed) : 1));
+  const speed = Math.min(100, Math.max(1, Number.isFinite(parsedSpeed) && parsedSpeed > 0 ? Math.floor(parsedSpeed) : 1));
   params.set('speed', String(speed));
   localStorage.setItem(SPEED_KEY, String(speed));
 
@@ -123,7 +123,7 @@ export function setupControls(
     gui.add(controls, 'track', options.tracks).onChange((val: string) => updateSetting('track', val));
   }
   gui.add(controls, 'population', 3, 10000, 1).name('Population (URL)').onFinishChange((val: number) => updateSetting('pop', val));
-  gui.add(controls, 'speed', 1, 64, 1).name('Sim speed').onChange((val: number) => updateUrlParamLive('speed', val));
+  gui.add(controls, 'speed', 1, 100, 1).name('Sim speed').onChange((val: number) => updateUrlParamLive('speed', val));
   const followController = gui.add(controls, 'followCam').name('Follow best car');
   const buttons = {
     saveBestModel: actions.onSaveModel,
