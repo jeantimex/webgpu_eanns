@@ -11,7 +11,6 @@ export default defineConfig({
         dino: resolve(__dirname, 'dino.html'),
         pacman: resolve(__dirname, 'pacman.html'),
         snake: resolve(__dirname, 'snake.html'),
-        tetris: resolve(__dirname, 'tetris.html'),
       },
     },
   },
