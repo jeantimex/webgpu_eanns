@@ -1,9 +1,9 @@
 import '../../style.css';
 import { currentSettings, setupControls } from '../../gui/controls_gui';
-import { Hud } from '../../ui/hud';
+import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
-import { FlappyEvolution } from './flappy_evolution';
+import { FlappyEvolution, type BestBirdSnapshot } from './flappy_evolution';
 import { FlappyRenderer } from './flappy_renderer';
 
 const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
@@ -20,48 +20,67 @@ function showError(error: unknown): void {
   showMessage(error instanceof Error ? error.message : 'Unable to start WebGPU.');
 }
 
+/** DOM overlay like the track HUD: Score/Alive top-left, Generation bottom-left. */
+function createHud(): { update(best: BestBirdSnapshot, generation: number): void } {
+  const stats = document.createElement('div');
+  stats.className = 'hud hud-stats';
+  const gen = document.createElement('div');
+  gen.className = 'hud hud-generation';
+  document.body.append(stats, gen);
+  let lastStats = '';
+  let lastGen = -1;
+  return {
+    update(best, generation) {
+      const text = `Pipes:   ${best.pipes}\nAlive:   ${best.aliveCount}\nVelY:    ${best.velY.toFixed(3)}\nFitness: ${best.fitness.toFixed(1)}`;
+      if (text !== lastStats) {
+        stats.textContent = text;
+        lastStats = text;
+      }
+      if (generation !== lastGen) {
+        gen.textContent = `Generation: ${generation}`;
+        lastGen = generation;
+      }
+    },
+  };
+}
+
 async function main(): Promise<void> {
   const gpu = await initializeWebGPU(canvas);
   const settings = currentSettings();
 
   const evolution = FlappyEvolution.init(gpu.device, settings.population);
-  const renderer = new FlappyRenderer(canvas, gpu, evolution.buffers);
-  const hud = new Hud();
+  const renderer = await FlappyRenderer.create(canvas, gpu, evolution.buffers);
+  const hud = createHud();
+  const networkPanel = new NetworkPanel([5, 8, 1]);
 
   const controls = setupControls({
     onSaveModel: () => {
-      showMessage('Saved best Flappy Bird model to browser storage!');
+      showMessage('Model save/load is not wired up for Flappy Bird yet.');
     },
     onLoadSavedBest: () => {
-      showMessage('Loaded saved Flappy Bird model.');
+      showMessage('Model save/load is not wired up for Flappy Bird yet.');
     },
   });
 
-  const loop = (): void => {
-    evolution.substeps(controls.speed);
+  // Fixed 60 Hz sim ticks (the original's frame rate) x sim speed, independent of display Hz.
+  let last = performance.now();
+  let acc = 0;
+  const loop = (now: number): void => {
+    acc += (Math.min(now - last, 100) / 1000) * 60 * controls.speed;
+    last = now;
+    const steps = Math.min(Math.floor(acc), 240);
+    acc -= steps;
+    if (steps > 0) evolution.substeps(steps);
     void evolution.checkAndEvolve();
     void evolution.readBestBirdState().then((best) => {
       renderer.setBestIndex(best.index);
-      hud.update(
-        {
-          index: best.index,
-          x: best.x,
-          y: best.y,
-          angleDeg: 0,
-          turn: 0,
-          engine: 0,
-          fitness: best.fitness,
-          alive: best.alive,
-          aliveCount: 0,
-        },
-        evolution.generation,
-      );
+      hud.update(best, evolution.generation);
+      networkPanel.draw(evolution.genomeAt(best.index));
     });
-
     renderer.render(evolution.pipesList.length);
     requestAnimationFrame(loop);
   };
-  loop();
+  loop(performance.now());
 }
 
 main().catch(showError);

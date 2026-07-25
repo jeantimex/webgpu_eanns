@@ -43,7 +43,7 @@ body {
 }
 
 .hud-stats {
-  top: 1rem;
+  top: 3.5rem; /* below the back-nav button */
 }
 
 .hud-generation {

@@ -1,13 +1,19 @@
+/**
+ * GPU flappy sim: one thread per bird, per-frame physics (60 fps, no dt) mirroring
+ * the source repo's Bird.update/jump and Pipe.checkCollision. World constants are
+ * literals mirrored from flappy_buffers.ts — keep the two in sync.
+ */
 export const flappyShader = /* wgsl */ `
 struct SimParams {
   birdCount: u32,
   pipeCount: u32,
-  dt: f32,
-  frameCounter: u32,
+  pad0: u32,
+  pad1: u32,
 };
 
+// 32-byte stride (8 f32): see BIRD_FLOATS in flappy_buffers.ts.
 struct BirdState {
-  pos: vec2f,      // [x, y]
+  pos: vec2f,
   velY: f32,
   alive: u32,
   score: u32,
@@ -28,16 +34,13 @@ struct Pipe {
 @group(0) @binding(2) var<storage, read_write> birds: array<BirdState>;
 @group(0) @binding(3) var<storage, read> pipes: array<Pipe>;
 
-const PLAYABLE_HEIGHT = 340.0;
-const WORLD_WIDTH = 600.0;
+const WORLD_W = 288.0;
+const GROUND_Y = 394.0; // 512 - ground.png height
 const BIRD_X = 50.0;
-const BIRD_RADIUS = 12.0;
+const BIRD_HALF_W = 19.0; // bird.png 38x26
+const BIRD_HALF_H = 13.0;
 const GRAVITY = 0.8;
-const JUMP_UPLIFT = -11.0;
-
-fn softSign(x: f32) -> f32 {
-  return x / (1.0 + abs(x));
-}
+const JUMP_UPLIFT = -12.0;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -46,8 +49,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var bird = birds[i];
   if (bird.alive == 0u) { return; }
 
-  // 1. Find the closest upcoming pipe
-  var closestIdx = 999999u;
+  // 1. Closest upcoming pipe (first whose right edge is still ahead of the bird).
+  var closestIdx = params.pipeCount;
   var minDiff = 999999.0;
   for (var p = 0u; p < params.pipeCount; p++) {
     let pipe = pipes[p];
@@ -58,73 +61,65 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  // 2. Prepare 5 Neural Network Inputs (normalized [0, 1])
-  var in0 = 1.0;
-  var in1 = 0.5;
-  var in2 = 0.5;
-  var in3 = bird.pos.y / PLAYABLE_HEIGHT;
-  var in4 = clamp((bird.velY + 12.0) / 24.0, 0.0, 1.0);
-
+  // 2. The 5 NN inputs, normalized like the original's p5 map() calls.
+  var inputs: array<f32, 5>;
+  inputs[3] = clamp(bird.pos.y / GROUND_Y, 0.0, 1.0);
+  inputs[4] = clamp((bird.velY + 12.0) / 24.0, 0.0, 1.0);
   if (closestIdx < params.pipeCount) {
     let pipe = pipes[closestIdx];
-    in0 = clamp((pipe.x + pipe.width - BIRD_X) / WORLD_WIDTH, 0.0, 1.0);
-    in1 = clamp(pipe.topY / PLAYABLE_HEIGHT, 0.0, 1.0);
-    in2 = clamp(pipe.bottomY / PLAYABLE_HEIGHT, 0.0, 1.0);
+    inputs[0] = clamp((pipe.x - BIRD_X) / (WORLD_W - BIRD_X), 0.0, 1.0);
+    inputs[1] = clamp(pipe.topY / GROUND_Y, 0.0, 1.0);
+    inputs[2] = clamp(pipe.bottomY / GROUND_Y, 0.0, 1.0);
+  } else {
+    inputs[0] = 1.0;
+    inputs[1] = 0.5;
+    inputs[2] = 0.5;
   }
 
-  // 3. FNN Forward Pass [5 -> 8 -> 1] (57 floats genome offset)
+  // 3. Forward pass [5 -> 8 -> 1]: relu hidden, sigmoid output (TF.js original).
   var offset = i * 57u;
   var hidden: array<f32, 8>;
-  // Layer 1: 5 inputs -> 8 hidden nodes
   for (var h = 0u; h < 8u; h++) {
-    var sum = in0 * genomes[offset + 0u * 8u + h]
-            + in1 * genomes[offset + 1u * 8u + h]
-            + in2 * genomes[offset + 2u * 8u + h]
-            + in3 * genomes[offset + 3u * 8u + h]
-            + in4 * genomes[offset + 4u * 8u + h]
-            + genomes[offset + 40u + h]; // bias row
-    hidden[h] = softSign(sum);
+    var sum = genomes[offset + 40u + h]; // bias row
+    for (var k = 0u; k < 5u; k++) {
+      sum += inputs[k] * genomes[offset + k * 8u + h];
+    }
+    hidden[h] = max(sum, 0.0);
   }
-  offset += 48u; // 5x8 + 8 bias
-
-  // Layer 2: 8 hidden -> 1 output
-  var outSum = 0.0;
+  offset += 48u; // 5x8 weights + 8 biases
+  var outSum = genomes[offset + 8u]; // output bias
   for (var h = 0u; h < 8u; h++) {
     outSum += hidden[h] * genomes[offset + h];
   }
-  outSum += genomes[offset + 8u]; // bias
-  let action = softSign(outSum);
+  let action = 1.0 / (1.0 + exp(-outSum)); // sigmoid
   bird.jumpOutput = action;
 
-  // 4. Physics & Jump Action
-  if (action > 0.0) {
+  // 4. Physics: jump (also damped, like Bird.jump), then gravity (Bird.update).
+  if (action > 0.5) {
     bird.velY += JUMP_UPLIFT;
     bird.velY *= 0.9;
   }
-
   bird.velY += GRAVITY;
   bird.velY *= 0.9;
   bird.pos.y += bird.velY;
   bird.score += 1u;
 
-  // 5. Collisions (Ground / Ceiling / Pipes)
-  if (bird.pos.y - BIRD_RADIUS < 0.0 || bird.pos.y + BIRD_RADIUS > PLAYABLE_HEIGHT) {
+  // 5. Death: ceiling/ground, then any pipe (Pipe.checkCollision per pipe).
+  if (bird.pos.y - BIRD_HALF_H < 0.0 || bird.pos.y + BIRD_HALF_H > GROUND_Y) {
     bird.alive = 0u;
   }
-
-  if (closestIdx < params.pipeCount) {
-    let pipe = pipes[closestIdx];
-    // Check if bird is horizontally inside the pipe
-    if (BIRD_X + BIRD_RADIUS > pipe.x && BIRD_X - BIRD_RADIUS < pipe.x + pipe.width) {
-      // Check vertical collision with top or bottom pipe
-      if (bird.pos.y - BIRD_RADIUS < pipe.topY || bird.pos.y + BIRD_RADIUS > pipe.bottomY) {
+  for (var p = 0u; p < params.pipeCount; p++) {
+    let pipe = pipes[p];
+    if (BIRD_X + BIRD_HALF_W >= pipe.x && BIRD_X - BIRD_HALF_W <= pipe.x + pipe.width) {
+      if (bird.pos.y - BIRD_HALF_H <= pipe.topY || bird.pos.y + BIRD_HALF_H >= pipe.bottomY) {
         bird.alive = 0u;
       }
     }
   }
 
+  // Fitness = score^2 (the original's normalizeFitness squares the score).
   let sc = f32(bird.score);
-  bird.fitness = sc * sc; // Quadratic score fitness
+  bird.fitness = sc * sc;
 
   birds[i] = bird;
 }
