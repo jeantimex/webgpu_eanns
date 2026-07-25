@@ -1,6 +1,6 @@
-import { GENOME_SIZE } from '../ai/network';
-import { buildCheckpointTable, checkpointsFlat, wallsFlat, type Track } from '../sim/track';
-import { createBufferWithData } from '../webgpu/utils';
+import { GENOME_SIZE } from './network';
+import { buildCheckpointTable, checkpointsFlat, wallsFlat, type Track } from './track';
+import { createBufferWithData } from '../../webgpu/utils';
 
 /**
  * CarState layout, 12 f32 = 48 bytes per car (matches the WGSL struct):

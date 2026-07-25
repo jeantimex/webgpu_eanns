@@ -1,6 +1,6 @@
-import { initPopulation, mulberry32, nextGeneration, type Rng } from '../ai/ga';
-import { autosaveBest } from '../ai/model';
-import type { Track } from '../sim/track';
+import { initPopulation, mulberry32, nextGeneration, type Rng } from './ga';
+import { autosaveBest } from './model';
+import type { Track } from './track';
 import { CAR_FLOATS, createSimBuffers, initialCarStates, uploadGenomes, type SimBuffers } from './buffers';
 import { simShader } from './sim.wgsl';
 

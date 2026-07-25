@@ -1,6 +1,6 @@
-import { CAR_FLOATS, type SimBuffers } from '../gpu/buffers';
-import { buildRenderWalls, type Track } from '../sim/track';
-import { createBufferWithData, resizeCanvasToDisplaySize, type WebGPUState } from '../webgpu/utils';
+import { CAR_FLOATS, type SimBuffers } from './buffers';
+import { buildRenderWalls, type Track } from './track';
+import { createBufferWithData, resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
 
 const renderShader = /* wgsl */ `
 struct Camera {

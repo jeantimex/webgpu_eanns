@@ -1,4 +1,4 @@
-import type { BestCarSnapshot } from '../gpu/evolution';
+import type { BestCarSnapshot } from './evolution';
 
 /** DOM overlay matching the Unity HUD: Turn/Engine/Eval top-left, Generation bottom-left. */
 export class Hud {

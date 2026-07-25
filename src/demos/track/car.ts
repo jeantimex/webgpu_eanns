@@ -1,4 +1,4 @@
-import { forward } from '../ai/network';
+import { forward } from './network';
 import { buildCheckpointTable, wallsFlat, CAPTURE_RADIUS, type CheckpointTable, type Track } from './track';
 
 /** Unity fixed timestep: 50 Hz. */

@@ -1,9 +1,9 @@
 import { initPopulation, mulberry32, nextGeneration } from './ga';
 import { parseModelText } from './model';
 import { GENOME_SIZE, TOPOLOGY, forward } from './network';
-import { simulatePopulationGpu } from '../gpu/evolution';
-import { initCarState, simulatePopulation, stepCar } from '../sim/car';
-import { buildCheckpointTable, wallsFlat, type Track } from '../sim/track';
+import { simulatePopulationGpu } from './evolution';
+import { initCarState, simulatePopulation, stepCar } from './car';
+import { buildCheckpointTable, wallsFlat, type Track } from './track';
 
 export interface SelftestResult {
   pass: boolean;

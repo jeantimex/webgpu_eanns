@@ -1,14 +1,18 @@
 import '../../style.css';
-import { loadSavedBest, loadTestModel, saveModel } from '../../ai/model';
-import { runSelftest } from '../../ai/selftest';
-import { Evolution, type BestCarSnapshot } from '../../gpu/evolution';
-import { currentSettings, persistMode, setupControls } from '../../gui/controls_gui';
-import { Renderer } from '../../renderer/renderer';
-import { loadTrack } from '../../sim/track';
-import { Hud } from '../../ui/hud';
+import { currentSettings, persistMode, setupControls, updateSetting } from '../../gui/controls_gui';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
+import { Evolution, type BestCarSnapshot } from './evolution';
+import { Hud } from './hud';
+import { loadModelFile, loadSavedBest, loadTestModel, saveModel, saveTestModel } from './model';
+import { TOPOLOGY } from './network';
+import { Renderer } from './renderer';
+import { runSelftest } from './selftest';
+import { loadTrack } from './track';
+
+/** Available tracks (public/tracks/<name>.json); adding one is a line here + the JSON file. */
+export const TRACKS = ['track1', 'track2', 'track3', 'track4', 'practice'];
 
 const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
 const message = requiredElement<HTMLDivElement>('#message');
@@ -34,7 +38,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const settings = currentSettings();
+  const settings = currentSettings(TRACKS);
   let isTest = settings.mode === 'Test';
   let noModelWarning = false;
   if (isTest && !loadTestModel()) {
@@ -52,24 +56,35 @@ async function main(): Promise<void> {
 
   const renderer = new Renderer(canvas, gpu, track, evolution.simBuffers);
   const hud = new Hud();
-  const networkPanel = new NetworkPanel();
+  const networkPanel = new NetworkPanel(TOPOLOGY);
   let lastBest: BestCarSnapshot | null = null;
 
-  const controls = setupControls({
-    onSaveModel: () => {
-      if (!lastBest) return;
-      saveModel(evolution.genomeAt(lastBest.index), {
-        track: track.name,
-        generation: evolution.generation,
-        eval: lastBest.fitness,
-      });
+  const controls = setupControls(
+    {
+      onSaveModel: () => {
+        if (!lastBest) return;
+        saveModel(evolution.genomeAt(lastBest.index), {
+          track: track.name,
+          generation: evolution.generation,
+          eval: lastBest.fitness,
+        });
+      },
+      onLoadSavedBest: () => {
+        const saved = loadSavedBest(track.name);
+        if (saved) evolution.injectBest(saved.weights);
+        else showMessage(`No saved best for track "${track.name}" yet.`);
+      },
+      onLoadModelFile: (file) => {
+        loadModelFile(file)
+          .then((weights) => {
+            saveTestModel(weights);
+            updateSetting('mode', 'Test');
+          })
+          .catch((error: unknown) => alert(error instanceof Error ? error.message : String(error)));
+      },
     },
-    onLoadSavedBest: () => {
-      const saved = loadSavedBest(track.name);
-      if (saved) evolution.injectBest(saved.weights);
-      else showMessage(`No saved best for track "${track.name}" yet.`);
-    },
-  });
+    { tracks: TRACKS },
+  );
 
   renderer.onPanStart = () => controls.setFollow(false);
 

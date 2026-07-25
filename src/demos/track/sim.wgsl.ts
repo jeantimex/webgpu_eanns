@@ -1,5 +1,5 @@
 /**
- * GPU mirror of src/sim/car.ts — same constants, same math, one thread per car.
+ * GPU mirror of ./car.ts — same constants, same math, one thread per car.
  * Any change here must be mirrored in car.ts (the selftest compares the two).
  */
 export const simShader = /* wgsl */ `

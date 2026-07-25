@@ -65,9 +65,9 @@ buffers directly — there is no per-frame CPU↔GPU roundtrip for simulation da
             CPU: readback → generation over? → GA → upload genomes
 ```
 
-#### Buffers (`src/gpu/buffers.ts`)
+#### Buffers (`src/demos/track/buffers.ts`)
 
-All sim data is in one bind group (`src/gpu/sim.wgsl.ts`):
+All sim data is in one bind group (`src/demos/track/sim.wgsl.ts`):
 
 | Binding | Buffer | Type | Contents |
 |---------|--------|------|----------|
@@ -83,7 +83,7 @@ Plus a `readback` buffer (`MAP_READ | COPY_DST`), target of the per-frame state 
 `CarState` is 12 f32 (48 B stride), mirrored exactly in WGSL:
 `pos(2), angleDeg, vel, alive(u32), cpIndex(u32), timeSinceCp, fitness, outputs(2), pad(2)`.
 
-#### Compute pass (`src/gpu/sim.wgsl.ts`, driven by `src/gpu/evolution.ts`)
+#### Compute pass (`src/demos/track/sim.wgsl.ts`, driven by `src/demos/track/evolution.ts`)
 
 - `@workgroup_size(64)`, one invocation per car, `ceil(population / 64)` workgroups.
 - Each dispatch = one physics substep at a fixed `dt = 1/50` s (Unity's FixedUpdate rate):
@@ -98,13 +98,13 @@ Plus a `readback` buffer (`MAP_READ | COPY_DST`), target of the per-frame state 
   0, `evolve()` runs the CPU GA, uploads the new genomes with `queue.writeBuffer`, and
   rewrites the initial car states — the next frame starts the new generation.
 
-#### Render pass (`src/renderer/renderer.ts`)
+#### Render pass (`src/demos/track/renderer.ts`)
 
 A single instanced pipeline draws everything in 3 draw calls:
 
 1. **Walls** — one elongated quad per wall strip plus two round joint discs per segment
    (8-triangle fans) so corners join smoothly. The render wall list is preprocessed by
-   `buildRenderWalls` (`src/sim/track.ts`): the two collider edges of each extracted Unity
+   `buildRenderWalls` (`src/demos/track/track.ts`): the two collider edges of each extracted Unity
    wall strip are paired back into a centerline, and near-coincident endpoints are snapped
    together.
 2. **Cars** — instanced 1×2 quads (the Unity `Car.prefab` size) rotated by the car-state
@@ -118,10 +118,10 @@ like Unity's `CameraMovement.cs`; wheel zooms, dragging pans (and auto-disables 
 
 #### CPU side
 
-- `src/ai/network.ts` — forward pass, genome↔weights mapping in Unity's exact order.
-- `src/ai/ga.ts` — seeded RNG (mulberry32), population init (uniform ±1), `nextGeneration`.
-- `src/ai/model.ts` — model save/load, `localStorage` autosave, Unity genotype import.
-- `src/sim/car.ts` — CPU reference implementation of the car physics, used by the selftest
+- `src/demos/track/network.ts` — forward pass, genome↔weights mapping in Unity's exact order.
+- `src/demos/track/ga.ts` — seeded RNG (mulberry32), population init (uniform ±1), `nextGeneration`.
+- `src/demos/track/model.ts` — model save/load, `localStorage` autosave, Unity genotype import.
+- `src/demos/track/car.ts` — CPU reference implementation of the car physics, used by the selftest
   as a parity oracle for the WGSL sim (and nothing else — training is GPU-only).
 
 ## Simulation fidelity
@@ -141,7 +141,7 @@ Constants matched to the Unity original (`CarMovement.cs`, `Sensor.cs`, `Checkpo
 | Mutation | per-parameter p=0.3, additive uniform ±2.0, all but best 2 |
 
 Known deliberate simplification: the car is a point with a 0.5 half-width for wall
-collision, not a full box collider (marked with a `ponytail:` comment in `src/sim/car.ts`).
+collision, not a full box collider (marked with a `ponytail:` comment in `src/demos/track/car.ts`).
 
 ## Controls (GUI panel, top-right)
 
@@ -185,7 +185,7 @@ To add a track:
    `{ "name", "start": {x, y, angleDeg}, "checkpoints": [[x,y],…], "walls": [[x1,y1,x2,y2],…] }`.
    Checkpoints are ordered racing-line points (index 0 = start line); walls are segments.
    Coordinates are Unity convention: x right, y up, angle CCW-positive with 0 = +Y.
-2. Add `"mytrack"` to `TRACKS` in `src/gui/controls_gui.ts`.
+2. Add `"mytrack"` to `TRACKS` in `src/demos/track/main.ts`.
 
 To export tracks from the Unity project yourself, drop `tools/TrackExporter.cs` into
 `Applying_EANNs/UnityProject/Assets/Editor/`, then use menu **Tools/EANNs/Export Open Track
@@ -195,20 +195,27 @@ Scene** (or **Export All Track Scenes**). JSON lands in `<UnityProject>/Exported
 
 ```
 src/
-  ai/        network.ts (forward pass), ga.ts (genetic algorithm), model.ts (persistence),
-             selftest.ts (parity/unit asserts)
-  gpu/       sim.wgsl.ts (compute shader), buffers.ts (buffer layouts), evolution.ts
-             (generation driver: dispatch, readback, GA hand-off)
-  sim/       track.ts (track data + checkpoint math + render-wall preprocessing),
-             car.ts (CPU reference physics)
-  renderer/  renderer.ts (instanced render pass, camera, pan/zoom)
-  gui/       controls_gui.ts (lil-gui panel)
-  ui/        hud.ts (DOM overlay), networkPanel.ts (2D-canvas network diagram)
+  demos/
+    track/     the car demo, self-contained: main.ts, network.ts (forward pass),
+               ga.ts (genetic algorithm), model.ts (persistence), selftest.ts
+               (parity/unit asserts), sim.wgsl.ts (compute shader), buffers.ts,
+               evolution.ts (generation driver: dispatch, readback, GA hand-off),
+               track.ts (track data + checkpoint math), car.ts (CPU reference
+               physics), renderer.ts (instanced render pass, pan/zoom), hud.ts
+    flappy/    the Flappy Bird demo, same shape: main.ts, flappy.wgsl.ts,
+               flappy_buffers.ts, flappy_evolution.ts, flappy_renderer.ts
+  gui/       controls_gui.ts (demo-agnostic lil-gui panel, URL/localStorage settings)
+  ui/        networkPanel.ts (2D-canvas network diagram, topology passed in)
   webgpu/    utils.ts (device/context init, buffer helper, DPI-aware resize)
-  utils/     dom.ts
-public/tracks/  track1–4.json (extracted from Unity), practice.json
-tools/          TrackExporter.cs (Unity editor script)
+  utils/     dom.ts, rng.ts (seeded RNG)
+public/tracks/         track1–4.json (extracted from Unity), practice.json
+public/assets/flappy/  sprites from the source repo
+tools/                 TrackExporter.cs (Unity editor script)
 ```
+
+A demo directory holds everything specific to that training project (sim shader, GA,
+persistence, renderer); adding a new project means adding a new `src/demos/<name>/`
+directory plus an HTML entry — the shared code is only `gui/`, `ui/`, `webgpu/`, `utils/`.
 
 ## Selftest
 

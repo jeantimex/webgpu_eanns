@@ -1,4 +1,4 @@
-import { mulberry32, type Rng } from '../../ai/ga';
+import { mulberry32, type Rng } from '../../utils/rng';
 import {
   BIRD_FLOATS,
   BIRD_X,

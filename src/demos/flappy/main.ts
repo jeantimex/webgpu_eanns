@@ -53,13 +53,13 @@ async function main(): Promise<void> {
   const hud = createHud();
   const networkPanel = new NetworkPanel([5, 8, 1]);
 
+  const notWired = (): void => {
+    showMessage('Model save/load is not wired up for Flappy Bird yet.');
+  };
   const controls = setupControls({
-    onSaveModel: () => {
-      showMessage('Model save/load is not wired up for Flappy Bird yet.');
-    },
-    onLoadSavedBest: () => {
-      showMessage('Model save/load is not wired up for Flappy Bird yet.');
-    },
+    onSaveModel: notWired,
+    onLoadSavedBest: notWired,
+    onLoadModelFile: notWired,
   });
 
   // Fixed 60 Hz sim ticks (the original's frame rate) x sim speed, independent of display Hz.

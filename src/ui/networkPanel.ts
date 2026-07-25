@@ -1,17 +1,15 @@
-import { TOPOLOGY } from '../ai/network';
-
 /**
- * Live diagram of the best genome's network (default the track's [5,4,3,2]),
- * like UINeuralNetworkPanel: nodes as circles, edges green for weight > 0 /
- * red for < 0, width ∝ |weight| (min 1px). Bias rows are not drawn (the Unity
- * panel shows neurons only). Genome layout: layer-major row-major, bias rows last.
+ * Live diagram of the best genome's network, like UINeuralNetworkPanel:
+ * nodes as circles, edges green for weight > 0 / red for < 0, width ∝ |weight| (min 1px).
+ * Bias rows are not drawn (the Unity panel shows neurons only).
+ * Genome layout: layer-major row-major, bias rows last.
  */
 export class NetworkPanel {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly topology: readonly number[];
   private lastDraw = 0;
 
-  constructor(topology: readonly number[] = TOPOLOGY) {
+  constructor(topology: readonly number[]) {
     this.topology = topology;
     const canvas = document.createElement('canvas');
     canvas.className = 'network-panel';
