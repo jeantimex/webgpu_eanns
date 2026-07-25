@@ -204,10 +204,12 @@ src/
                physics), renderer.ts (instanced render pass, pan/zoom), hud.ts
     flappy/    the Flappy Bird demo, same shape: main.ts, flappy.wgsl.ts,
                flappy_buffers.ts, flappy_evolution.ts, flappy_renderer.ts
+    dino/      the Chrome Dino demo, same shape: main.ts, dino.wgsl.ts,
+               dino_buffers.ts, dino_evolution.ts, dino_renderer.ts
   gui/       controls_gui.ts (demo-agnostic lil-gui panel, URL/localStorage settings)
   ui/        networkPanel.ts (2D-canvas network diagram, topology passed in)
   webgpu/    utils.ts (device/context init, buffer helper, DPI-aware resize)
-  utils/     dom.ts, rng.ts (seeded RNG)
+  utils/     dom.ts, rng.ts (seeded RNG), ga.ts (roulette-wheel GA)
 public/tracks/         track1–4.json (extracted from Unity), practice.json
 public/assets/flappy/  sprites from the source repo
 tools/                 TrackExporter.cs (Unity editor script)

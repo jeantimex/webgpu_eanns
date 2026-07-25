@@ -8,6 +8,7 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         track: resolve(__dirname, 'track.html'),
         flappy: resolve(__dirname, 'flappy-bird.html'),
+        dino: resolve(__dirname, 'dino.html'),
       },
     },
   },

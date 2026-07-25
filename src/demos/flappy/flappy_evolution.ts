@@ -1,3 +1,4 @@
+import { nextRouletteGeneration } from '../../utils/ga';
 import { mulberry32, type Rng } from '../../utils/rng';
 import {
   BIRD_FLOATS,
@@ -28,42 +29,6 @@ export interface BestBirdSnapshot {
   pipes: number;
   alive: boolean;
   aliveCount: number;
-}
-
-/** Box–Muller on the seeded rng, for the original's randomGaussian() mutation. */
-function gaussian(rng: Rng): number {
-  const u = Math.max(rng(), 1e-12);
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rng());
-}
-
-/**
- * The source repo's geneticAlgorithm.js, on flat genomes: fitness is already
- * score^2 (computed in the shader); normalize, roulette-wheel pool selection,
- * child = copy + per-weight gaussian mutation with probability 0.1.
- */
-export function nextFlappyGeneration(population: Float64Array[], fitnesses: ArrayLike<number>, rng: Rng): Float64Array[] {
-  const n = population.length;
-  let sum = 0;
-  for (let i = 0; i < n; i++) sum += fitnesses[i];
-  const probs = new Float64Array(n);
-  if (sum > 0) for (let i = 0; i < n; i++) probs[i] = fitnesses[i] / sum;
-
-  return Array.from({ length: n }, () => {
-    // Roulette-wheel selection (poolSelection).
-    let r = rng();
-    let idx = 0;
-    while (r > 0 && idx < n) {
-      r -= probs[idx];
-      idx++;
-    }
-    const parent = population[Math.max(0, idx - 1)];
-    // copy() + mutate(0.1).
-    const child = parent.slice();
-    for (let k = 0; k < FLAPPY_GENOME_SIZE; k++) {
-      if (rng() < 0.1) child[k] += gaussian(rng);
-    }
-    return child;
-  });
 }
 
 /**
@@ -207,7 +172,7 @@ export class FlappyEvolution {
       }
       if (aliveCount > 0) return;
 
-      this.genomes = nextFlappyGeneration(this.genomes, states.filter((_, idx) => idx % BIRD_FLOATS === 5), this.rng);
+      this.genomes = nextRouletteGeneration(this.genomes, states.filter((_, idx) => idx % BIRD_FLOATS === 5), this.rng);
       this.generation++;
       this.uploadGenomes();
       this.resetBirds();
