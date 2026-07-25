@@ -284,7 +284,7 @@ export class Renderer {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: this.context.getCurrentTexture().createView(),
-        clearValue: { r: 0.96, g: 0.96, b: 0.96, a: 1 },
+        clearValue: { r: 0.08, g: 0.12, b: 0.12, a: 1 },
         loadOp: 'clear',
         storeOp: 'store',
       }],

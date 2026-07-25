@@ -304,7 +304,7 @@ export class PacmanRenderer {
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: this.context.getCurrentTexture().createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 1 }, // arcade black
+        clearValue: { r: 0.08, g: 0.12, b: 0.12, a: 1 },
         loadOp: 'clear',
         storeOp: 'store',
       }],
