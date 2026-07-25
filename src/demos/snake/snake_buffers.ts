@@ -1,7 +1,7 @@
 import { createBufferWithData } from '../../webgpu/utils';
 
-/** Genome layout [14 -> 12 -> 3], layer-major row-major with bias rows last: 14x12 + 12 + 12x3 + 3. */
-export const SNAKE_GENOME_SIZE = 219;
+/** Genome layout [16 -> 12 -> 3], layer-major row-major with bias rows last: 16x12 + 12 + 12x3 + 3. */
+export const SNAKE_GENOME_SIZE = 243;
 
 /** Board is 20x20 cells; world units are cells. */
 export const GRID = 20;
@@ -27,6 +27,7 @@ export const A = {
   ringHead: 10, // next write slot in the segment ring
   ringTail: 11, // oldest segment slot
   rng: 12, // u32 xorshift state
+  score: 13, // shaped training reward
   bodyMask: 14, // 13 u32 words: bit (y*20+x) = cell occupied by the snake
   ring: 27, // one u32 cell id per segment
 } as const;

@@ -15,6 +15,7 @@ export interface BestSnakeSnapshot {
   apples: number;
   length: number;
   moves: number;
+  score: number;
   gameOver: boolean;
   aliveCount: number;
 }
@@ -66,7 +67,7 @@ export class SnakeEvolution {
     return new SnakeEvolution(device, createSnakeBuffers(device, populationSize), populationSize, seed);
   }
 
-  /** CPU-side genome of agent `index` (219 floats, uploaded to the GPU each generation). */
+  /** CPU-side genome of agent `index` (243 floats, uploaded to the GPU each generation). */
   genomeAt(index: number): Float64Array {
     return this.genomes[index];
   }
@@ -117,11 +118,13 @@ export class SnakeEvolution {
       }
       if (aliveCount > 0) return;
 
-      // Apples dominate (quadratic); tiny survival term separates zero-apple agents.
+      // Apples dominate; shaped score rewards moving toward apples and discourages looping.
       const fitnesses = new Float64Array(this.populationSize);
       for (let i = 0; i < this.populationSize; i++) {
         const o = i * AGENT_FLOATS;
-        fitnesses[i] = states[o + A.apples] ** 2 + states[o + A.moves] * 0.001;
+        const apples = states[o + A.apples];
+        const shaped = Math.max(0, states[o + A.score]);
+        fitnesses[i] = 1 + apples * apples * 100 + apples * 25 + shaped + states[o + A.moves] * 0.0005;
       }
       this.genomes = nextRouletteGeneration(this.genomes, fitnesses, this.rng);
       this.generation++;
@@ -140,10 +143,23 @@ export class SnakeEvolution {
     let aliveCount = 0;
     for (let i = 0; i < this.populationSize; i++) {
       const o = i * AGENT_FLOATS;
-      if (states[o + A.apples] > states[best * AGENT_FLOATS + A.apples]) best = i;
+      const bestOffset = best * AGENT_FLOATS;
+      if (
+        states[o + A.apples] > states[bestOffset + A.apples] ||
+        (states[o + A.apples] === states[bestOffset + A.apples] && states[o + A.score] > states[bestOffset + A.score])
+      ) {
+        best = i;
+      }
       if (states[o + A.gameOver] < 0.5) {
         aliveCount++;
-        if (bestAlive < 0 || states[o + A.apples] > states[bestAlive * AGENT_FLOATS + A.apples]) bestAlive = i;
+        const bestAliveOffset = bestAlive * AGENT_FLOATS;
+        if (
+          bestAlive < 0 ||
+          states[o + A.apples] > states[bestAliveOffset + A.apples] ||
+          (states[o + A.apples] === states[bestAliveOffset + A.apples] && states[o + A.score] > states[bestAliveOffset + A.score])
+        ) {
+          bestAlive = i;
+        }
       }
     }
     const shown = bestAlive >= 0 ? bestAlive : best;
@@ -153,6 +169,7 @@ export class SnakeEvolution {
       apples: states[o + A.apples],
       length: states[o + A.length],
       moves: states[o + A.moves],
+      score: states[o + A.score],
       gameOver: states[o + A.gameOver] > 0.5,
       aliveCount,
     };

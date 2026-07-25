@@ -41,7 +41,7 @@ function createHud(): { update(best: BestSnakeSnapshot, generation: number): voi
   let lastGen = -1;
   return {
     update(best, generation) {
-      const text = `Apples:  ${best.apples}\nLength:  ${best.length}\nMoves:   ${best.moves}\nAlive:   ${best.aliveCount}`;
+      const text = `Apples:  ${best.apples}\nLength:  ${best.length}\nMoves:   ${best.moves}\nScore:   ${best.score.toFixed(1)}\nAlive:   ${best.aliveCount}`;
       if (text !== lastStats) {
         stats.textContent = text;
         lastStats = text;
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   const evolution = SnakeEvolution.init(gpu.device, settings.population);
   const renderer = new SnakeRenderer(canvas, gpu, evolution.buffers);
   const hud = createHud();
-  const networkPanel = new NetworkPanel([14, 12, 3]);
+  const networkPanel = new NetworkPanel([16, 12, 3]);
 
   const notWired = (): void => {
     showMessage('Model save/load is not wired up for Snake yet.');
