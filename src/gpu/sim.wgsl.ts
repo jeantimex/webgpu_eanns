@@ -47,18 +47,19 @@ struct Checkpoint {
 const MAX_VEL = 20.0;
 const ACCELERATION = 8.0;
 const VEL_FRICT = 2.0;
-const TURN_SPEED = 100.0;
+const TURN_SPEED = 180.0;
 const MAX_CHECKPOINT_DELAY = 7.0;
 
-const SENSOR_MAX_DIST = 10.0;
+const SENSOR_MAX_DIST = 25.0;
 const SENSOR_MIN_DIST = 0.01;
+const BRAKE_ACCEL = 24.0;
 // Sensor angles relative to forward and car-local origins (x=right, y=forward),
 // matching Car.prefab (local (±0.3,0.27),(±0.3,0.42),(0,0.42), car scale (1,2))
 // and Unity's hierarchy order (right side first). Mirror of car.ts.
 const SENSOR_ANGLES = array<f32, 5>(-0.7853981633974483, -0.3587706702705722, 0.0, 0.3587706702705722, 0.7853981633974483);
-const SENSOR_ORIGINS = array<vec2f, 5>(vec2f(0.3, 0.54), vec2f(0.3, 0.84), vec2f(0.0, 0.84), vec2f(-0.3, 0.84), vec2f(-0.3, 0.54));
+const SENSOR_ORIGINS = array<vec2f, 5>(vec2f(-0.3, 0.54), vec2f(-0.3, 0.84), vec2f(0.0, 0.84), vec2f(0.3, 0.84), vec2f(0.3, 0.54));
 
-const CAPTURE_RADIUS = 3.0;
+const CAPTURE_RADIUS = 4.0;
 // ponytail: point car with half-width; Unity used a 1x2 box collider.
 const CAR_HALF_WIDTH = 0.5;
 
@@ -141,12 +142,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   car.outputs = vec2f(turn, engine);
   let dt = params.dt;
 
-  // ApplyInput: engine force.
-  var canAccelerate = false;
-  if (engine < 0.0) { canAccelerate = car.vel > engine * MAX_VEL; }
-  else if (engine > 0.0) { canAccelerate = car.vel < engine * MAX_VEL; }
-  if (canAccelerate) {
-    car.vel = clamp(car.vel + engine * ACCELERATION * dt, -MAX_VEL, MAX_VEL);
+  // ApplyInput: engine & braking force.
+  if (engine < 0.0) {
+    if (car.vel > 0.0) {
+      // Active braking while moving forward
+      car.vel = max(0.0, car.vel + engine * BRAKE_ACCEL * dt);
+    } else if (car.vel > engine * MAX_VEL) {
+      car.vel = max(-MAX_VEL, car.vel + engine * ACCELERATION * dt);
+    }
+  } else if (engine > 0.0) {
+    if (car.vel < 0.0) {
+      // Active braking while moving backward
+      car.vel = min(0.0, car.vel + engine * BRAKE_ACCEL * dt);
+    } else if (car.vel < engine * MAX_VEL) {
+      car.vel = min(MAX_VEL, car.vel + engine * ACCELERATION * dt);
+    }
   }
   // ApplyInput: rotation (negative sign matches CarMovement).
   car.angle += -turn * TURN_SPEED * dt;
@@ -169,12 +179,34 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  // Checkpoint timeout.
+  // Checkpoint timeout & off-track grace period with grass friction.
+  let currentIdx = car.cpIndex;
+  if (currentIdx > 0u && currentIdx < params.cpCount) {
+    let cpPrev = checkpoints[currentIdx - 1u].pos;
+    let cpCurr = checkpoints[currentIdx].pos;
+    let corrDist = pointSegmentDist(car.pos, cpPrev, cpCurr);
+    if (corrDist > 5.5) {
+      // Off-track grass friction slows car down
+      car.vel *= 0.95;
+      // Accelerate timeout while off-track (gives ~0.8s grace period)
+      car.timeSinceCp += dt * 3.0;
+      if (corrDist > 12.0) {
+        car.alive = 0u;
+      }
+    }
+  }
   car.timeSinceCp += dt;
   if (car.timeSinceCp > MAX_CHECKPOINT_DELAY) { car.alive = 0u; }
 
   if (car.alive == 0u) {
     car.vel = 0.0;
+    // Strip partial credit for uncaptured segment on crash so suicidal wall hits are penalized!
+    let idx = car.cpIndex;
+    if (idx > 0u && idx <= params.cpCount) {
+      car.fitness = checkpoints[idx - 1u].accReward;
+    } else {
+      car.fitness = 0.0;
+    }
     cars[i] = car;
     return;
   }

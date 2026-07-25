@@ -111,6 +111,8 @@ export class Evolution {
     return this.readPending;
   }
 
+  private isEvolving = false;
+
   /** Generation ends when every car is dead (wall or checkpoint timeout). */
   async isGenerationOver(): Promise<boolean> {
     const states = await this.readStates();
@@ -126,6 +128,36 @@ export class Evolution {
     const fitness = new Float32Array(this.populationSize);
     for (let i = 0; i < this.populationSize; i++) fitness[i] = states[i * CAR_FLOATS + 7];
     return fitness;
+  }
+
+  /**
+   * Safely check if generation is over and perform evolution step (guarded against
+   * concurrent calls and duplicate frame dispatches).
+   */
+  async checkAndEvolve(isTest: boolean): Promise<void> {
+    if (this.isEvolving) return;
+    this.isEvolving = true;
+    try {
+      const over = await this.isGenerationOver();
+      if (!over) {
+        this.isEvolving = false;
+        return;
+      }
+      if (isTest) {
+        this.resetStates();
+      } else {
+        const fitnesses = await this.readFitness();
+        let best = 0;
+        for (let i = 1; i < this.populationSize; i++) if (fitnesses[i] > fitnesses[best]) best = i;
+        autosaveBest(this.track.name, this.genomes[best], this.generation, fitnesses[best]);
+        this.genomes = nextGeneration(this.genomes, fitnesses, this.rng);
+        uploadGenomes(this.device, this.buffers, this.genomes);
+        this.resetStates();
+        this.generation++;
+      }
+    } finally {
+      this.isEvolving = false;
+    }
   }
 
   /** CPU GA step from the last fitnesses, then upload new genomes and reset states. */

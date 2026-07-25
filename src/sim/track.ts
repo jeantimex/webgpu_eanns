@@ -9,8 +9,8 @@ export interface Track {
   walls: [number, number, number, number][];
 }
 
-/** Unity Checkpoint.CaptureRadius. */
-export const CAPTURE_RADIUS = 3;
+/** Unity Checkpoint.CaptureRadius (3.0) + car length (1.0) = 4.0 effective capture radius. */
+export const CAPTURE_RADIUS = 4.0;
 
 /** Per-checkpoint derived geometry, mirroring TrackManager.CalculateCheckpointPercentages. */
 export interface CheckpointTable {

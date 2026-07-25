@@ -77,12 +77,7 @@ async function main(): Promise<void> {
 
   const loop = (): void => {
     evolution.substeps(controls.speed);
-    void evolution.isGenerationOver().then((over) => {
-      if (!over) return;
-      // Test mode: GA skipped, the same car just reruns the track.
-      if (isTest) evolution.resetStates();
-      else void evolution.evolve();
-    });
+    void evolution.checkAndEvolve(isTest);
     void evolution.readBestCarState().then((best) => {
       lastBest = best;
       renderer.follow(best.x, best.y, best.index, controls.followCam);

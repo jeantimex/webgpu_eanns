@@ -30,7 +30,7 @@ struct CarState {
 
 const DEG2RAD = 0.017453292519943295;
 const SENSOR_ANGLES = array<f32, 5>(-0.7853981633974483, -0.3587706702705722, 0.0, 0.3587706702705722, 0.7853981633974483);
-const SENSOR_ORIGINS = array<vec2f, 5>(vec2f(0.3, 0.54), vec2f(0.3, 0.84), vec2f(0.0, 0.84), vec2f(-0.3, 0.84), vec2f(-0.3, 0.54));
+const SENSOR_ORIGINS = array<vec2f, 5>(vec2f(-0.3, 0.54), vec2f(-0.3, 0.84), vec2f(0.0, 0.84), vec2f(0.3, 0.84), vec2f(0.3, 0.54));
 const QUAD = array<vec2f, 6>(
   vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
   vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),

@@ -8,12 +8,13 @@ export const DT = 1 / 50;
 const MAX_VEL = 20;
 const ACCELERATION = 8;
 const VEL_FRICT = 2; // applied only when throttle == 0
-const TURN_SPEED = 100; // degrees/sec
+const TURN_SPEED = 180; // degrees/sec
 
 const MAX_CHECKPOINT_DELAY = 7; // seconds without a checkpoint before death
 
-const SENSOR_MAX_DIST = 10;
+const SENSOR_MAX_DIST = 25;
 const SENSOR_MIN_DIST = 0.01;
+const BRAKE_ACCEL = 24;
 // Sensor angles relative to forward and car-local origins (x=right, y=forward),
 // from Car.prefab: sensors at local (±0.3,0.27),(±0.3,0.42),(0,0.42) under car scale
 // (1,2) → y doubled. Order matches Unity's hierarchy (GetComponentsInChildren):
@@ -22,11 +23,11 @@ const SENSOR_MIN_DIST = 0.01;
 const SENSOR_HALF_ANGLE = Math.atan(2.7 / 7.2);
 export const SENSOR_ANGLES = [-Math.PI / 4, -SENSOR_HALF_ANGLE, 0, SENSOR_HALF_ANGLE, Math.PI / 4];
 export const SENSOR_ORIGINS = [
-  [0.3, 0.54],
-  [0.3, 0.84],
-  [0, 0.84],
-  [-0.3, 0.84],
   [-0.3, 0.54],
+  [-0.3, 0.84],
+  [0, 0.84],
+  [0.3, 0.84],
+  [0.3, 0.54],
 ];
 
 // ponytail: car approximated as a point that dies within half-width of a wall;
@@ -130,12 +131,21 @@ export function stepCar(
   const engine = f32(Math.max(-1, Math.min(1, outputs[1])));
   state.outputs = [turn, engine];
 
-  // ApplyInput: engine force.
-  let canAccelerate = false;
-  if (engine < 0) canAccelerate = state.vel > engine * MAX_VEL;
-  else if (engine > 0) canAccelerate = state.vel < engine * MAX_VEL;
-  if (canAccelerate) {
-    state.vel = f32(Math.max(-MAX_VEL, Math.min(MAX_VEL, f32(state.vel + f32(engine * ACCELERATION * dt)))));
+  // ApplyInput: engine & braking force.
+  if (engine < 0) {
+    if (state.vel > 0) {
+      // Active braking while moving forward
+      state.vel = f32(Math.max(0, state.vel + f32(engine * BRAKE_ACCEL * dt)));
+    } else if (state.vel > engine * MAX_VEL) {
+      state.vel = f32(Math.max(-MAX_VEL, state.vel + f32(engine * ACCELERATION * dt)));
+    }
+  } else if (engine > 0) {
+    if (state.vel < 0) {
+      // Active braking while moving backward
+      state.vel = f32(Math.min(0, state.vel + f32(engine * BRAKE_ACCEL * dt)));
+    } else if (state.vel < engine * MAX_VEL) {
+      state.vel = f32(Math.min(MAX_VEL, state.vel + f32(engine * ACCELERATION * dt)));
+    }
   }
   // ApplyInput: rotation (negative sign matches CarMovement's AngleAxis(-input * ...)).
   state.angleDeg = f32(state.angleDeg + f32(-turn * TURN_SPEED * dt));
@@ -159,12 +169,32 @@ export function stepCar(
     }
   }
 
-  // Checkpoint timeout.
+  // Checkpoint timeout & off-track grace period with grass friction.
+  const currentIdx = state.cpIndex;
+  if (currentIdx > 0 && currentIdx < cps.length) {
+    const cpPrev = cps[currentIdx - 1];
+    const cpCurr = cps[currentIdx];
+    const corrDist = pointSegmentDist(state.x, state.y, cpPrev[0], cpPrev[1], cpCurr[0], cpCurr[1]);
+    if (corrDist > 5.5) {
+      state.vel = f32(state.vel * 0.95);
+      state.timeSinceCp = f32(state.timeSinceCp + dt * 3);
+      if (corrDist > 12) {
+        state.alive = false;
+      }
+    }
+  }
   state.timeSinceCp = f32(state.timeSinceCp + dt);
   if (state.timeSinceCp > MAX_CHECKPOINT_DELAY) state.alive = false;
 
   if (!state.alive) {
     state.vel = 0;
+    // Strip partial credit for uncaptured segment on crash so suicidal wall hits are penalized!
+    const idx = state.cpIndex;
+    if (idx > 0 && idx <= cps.length) {
+      state.fitness = table.accReward[idx - 1];
+    } else {
+      state.fitness = 0;
+    }
     return;
   }
 
