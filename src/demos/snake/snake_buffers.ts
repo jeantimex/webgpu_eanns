@@ -1,10 +1,12 @@
 import { createBufferWithData } from '../../webgpu/utils';
 
-/** Genome layout [16 -> 12 -> 3], layer-major row-major with bias rows last: 16x12 + 12 + 12x3 + 3. */
-export const SNAKE_GENOME_SIZE = 243;
+/** Genome layout [24 -> 16 -> 16 -> 4] (SnakeAI), layer-major row-major with bias rows last: 25x16 + 17x16 + 17x4. */
+export const SNAKE_GENOME_SIZE = 740;
+/** Network topology, shared by the GA crossover and the network panel. */
+export const SNAKE_TOPOLOGY = [24, 16, 16, 4] as const;
 
-/** Board is 20x20 cells; world units are cells. */
-export const GRID = 20;
+/** SnakeAI's playable board is 38x38 cells; world units are cells. */
+export const GRID = 38;
 export const CELLS = GRID * GRID;
 export const MASK_WORDS = Math.ceil(CELLS / 32);
 
@@ -12,51 +14,30 @@ export const MASK_WORDS = Math.ceil(CELLS / 32);
  * Agent state. Raw-indexed (no WGSL struct) so CPU/GPU layouts can't drift.
  * u32 fields are bit patterns (bitcast in WGSL).
  */
-export const AGENT_FLOATS = 27 + CELLS;
 export const A = {
   headX: 0,
   headY: 1,
-  dir: 2, // 0=up, 1=down, 2=left, 3=right
+  dir: 2, // 0=up, 1=down, 2=left, 3=right, 4=not moving yet
   gameOver: 3,
   length: 4,
   apples: 5,
   moves: 6, // u32
-  sinceEat: 7, // moves since last apple; stall timeout
+  sinceEat: 7, // SnakeAI move budget: moves left before starvation (200 start, +100/apple, cap 500)
   appleX: 8,
   appleY: 9,
   ringHead: 10, // next write slot in the segment ring
   ringTail: 11, // oldest segment slot
   rng: 12, // u32 xorshift state
   score: 13, // shaped training reward
-  bodyMask: 14, // 13 u32 words: bit (y*20+x) = cell occupied by the snake
-  ring: 27, // one u32 cell id per segment
+  bodyMask: 14, // u32 words: bit (y*GRID+x) = cell occupied by the snake
+  ring: 14 + MASK_WORDS, // one u32 cell id per segment, tail first
 } as const;
+export const AGENT_FLOATS = A.ring + CELLS;
 
-export const STALL_MOVES = 200; // no apple for this many moves ends the game
+export const LIFE_START = 200; // SnakeAI move budget: starting moves
+export const LIFE_PER_APPLE = 100; // moves gained per apple
+export const LIFE_MAX = 500; // budget cap
 export const MAX_MOVES = 10000; // hard cap per game
-
-/** Static wall blocks (retro map: 3 corner Ls + center C), as [x, y] cells. */
-export const OBSTACLES: ReadonlyArray<readonly [number, number]> = [
-  // Top-left L
-  [2, 2], [3, 2], [4, 2], [2, 3], [2, 4],
-  // Top-right L
-  [16, 2], [17, 2], [18, 2], [18, 3], [18, 4],
-  // Bottom-right L
-  [16, 18], [17, 18], [18, 18], [18, 17], [18, 16],
-  // Center C
-  [8, 9], [9, 9], [10, 9], [8, 10], [9, 10], [10, 10],
-  [8, 11], [8, 12], [8, 13], [9, 13], [10, 13], [11, 13], [12, 13], [13, 13],
-];
-
-/** Obstacle bits in body-mask layout. */
-function obstacleMask(): Uint32Array<ArrayBuffer> {
-  const bits = new Uint32Array(MASK_WORDS);
-  for (const [x, y] of OBSTACLES) {
-    const cell = y * GRID + x;
-    bits[cell >>> 5] |= 1 << (cell & 31);
-  }
-  return bits;
-}
 
 export interface SnakeBuffers {
   params: GPUBuffer;
@@ -66,35 +47,35 @@ export interface SnakeBuffers {
 }
 
 /**
- * All agents: length-8 snake near the upper-right heading up; apple at a
- * deterministic per-agent spot away from the body; per-agent rng seed.
+ * All agents: length-3 snake centered on the board (SnakeAI's start);
+ * apple at a deterministic per-agent spot away from the body; per-agent rng seed.
  */
-export function initialAgentStates(count: number): Float32Array<ArrayBuffer> {
+export function initialAgentStates(count: number, seedOffset = 0): Float32Array<ArrayBuffer> {
   const states = new Float32Array(count * AGENT_FLOATS);
   for (let i = 0; i < count; i++) {
     const o = i * AGENT_FLOATS;
-    states[o + A.headX] = 13;
-    states[o + A.headY] = 4;
-    states[o + A.dir] = 0; // up
-    states[o + A.length] = 8;
-    states[o + A.ringHead] = 8;
+    const startX = Math.floor(GRID / 2);
+    const startY = Math.floor(GRID / 2);
+    states[o + A.headX] = startX;
+    states[o + A.headY] = startY;
+    states[o + A.dir] = 4; // no velocity until the first decision, like SnakeAI
+    states[o + A.length] = 3;
+    states[o + A.score] = 3;
+    states[o + A.sinceEat] = LIFE_START;
+    states[o + A.ringHead] = 3;
     states[o + A.ringTail] = 0;
-    new Uint32Array(states.buffer)[o + A.rng] = ((i + 1) * 2654435761) >>> 0;
+    new Uint32Array(states.buffer)[o + A.rng] = ((seedOffset + i + 1) * 2654435761) >>> 0;
 
     const u32 = new Uint32Array(states.buffer);
-    // Static obstacles: OR'd into the body mask, so collision, danger inputs,
-    // apple spawning, and rendering all respect them for free.
-    const obstacles = obstacleMask();
-    for (let w = 0; w < MASK_WORDS; w++) u32[o + A.bodyMask + w] |= obstacles[w];
-    // Body (13,11)..(13,4): mask bits + ring cell ids (tail first).
-    for (let s = 0; s < 8; s++) {
-      const cx = 13;
-      const cy = 11 - s;
+    // Body is tail first in the ring: (x,y+2),(x,y+1),(x,y/head).
+    for (let s = 0; s < 3; s++) {
+      const cx = startX;
+      const cy = startY + 2 - s;
       const cell = cy * GRID + cx;
       u32[o + A.bodyMask + (cell >>> 5)] |= 1 << (cell & 31);
       u32[o + A.ring + s] = cell;
     }
-    // Apple: deterministic per agent, off the initial body and obstacles.
+    // Apple: deterministic per agent, off the initial body.
     let ax = (i * 37 + 13) % GRID;
     let ay = (i * 53 + 7) % GRID;
     for (let k = 0; k < CELLS; k++) {

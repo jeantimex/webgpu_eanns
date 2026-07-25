@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tetris WebGPU EANN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css">
+  <style>
+    @font-face {
+      font-family: 'Press Start 2P';
+      src: url('/assets/tetris/press-start-2p.woff2') format('woff2');
+    }
+    .back-nav {
+      position: absolute;
+      top: 1rem;
+      left: 1rem;
+      z-index: 100;
+    }
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #f1f5f9;
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      backdrop-filter: blur(8px);
+      transition: all 0.2s ease;
+    }
+    .back-btn:hover {
+      background: rgba(30, 41, 59, 0.95);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+    .nes-panel {
+      position: fixed;
+      right: 1rem;
+      top: 17rem;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      font-family: 'Press Start 2P', monospace;
+      user-select: none;
+    }
+    .nes-box {
+      background: #000;
+      border: 3px solid #7ba8a0;
+      outline: 2px solid #565e66;
+      padding: 0.5rem 0.7rem;
+      min-width: 9rem;
+    }
+    .nes-label {
+      color: #f1f5f9;
+      font-size: 0.55rem;
+      margin-bottom: 0.35rem;
+    }
+    .nes-value {
+      color: #f1f5f9;
+      font-size: 0.8rem;
+    }
+    .nes-gen {
+      color: #f1f5f9;
+      font-size: 0.55rem;
+      text-align: center;
+      margin-top: 0.2rem;
+    }
+    .nes-box canvas {
+      display: block;
+      margin: 0 auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="back-nav">
+    <a href="/index.html" class="back-btn">&larr; Back to Demos</a>
+  </div>
+  <canvas id="webgpu-canvas"></canvas>
+  <div id="message"></div>
+  <script type="module" src="/src/demos/tetris/main.ts"></script>
+</body>
+</html>

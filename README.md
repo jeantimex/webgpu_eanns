@@ -211,6 +211,9 @@ src/
                (mechanics + sprites from the MIT-licensed pacman-js)
     snake/     the Snake demo, same shape: main.ts, snake.wgsl.ts,
                snake_buffers.ts, snake_evolution.ts, snake_renderer.ts
+    tetris/    the NES Tetris demo, same shape: main.ts, tetris_pieces.ts,
+               tetris.wgsl.ts, tetris_buffers.ts, tetris_evolution.ts,
+               tetris_renderer.ts
   gui/       controls_gui.ts (demo-agnostic lil-gui panel, URL/localStorage settings)
   ui/        networkPanel.ts (2D-canvas network diagram, topology passed in)
   webgpu/    utils.ts (device/context init, buffer helper, DPI-aware resize)

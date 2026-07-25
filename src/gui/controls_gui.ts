@@ -108,7 +108,7 @@ export function setupControls(
   // Hidden file input behind the "Load model file" button.
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
-  fileInput.accept = '.json,.txt';
+  fileInput.accept = '.json,.txt,.csv';
   fileInput.style.display = 'none';
   document.body.append(fileInput);
   fileInput.addEventListener('change', () => {

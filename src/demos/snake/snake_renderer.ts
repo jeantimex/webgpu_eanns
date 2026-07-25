@@ -1,5 +1,5 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
-import { A, AGENT_FLOATS, CELLS, GRID, OBSTACLES, type SnakeBuffers } from './snake_buffers';
+import { A, AGENT_FLOATS, CELLS, GRID, type SnakeBuffers } from './snake_buffers';
 
 const COLOR_PAGE: [number, number, number] = [0.08, 0.12, 0.12];
 const COLOR_BOARD: [number, number, number] = [0.63, 0.67, 0.58]; // #a1ab94
@@ -11,10 +11,6 @@ const COLOR_BODY: [number, number, number] = [0.03, 0.025, 0.025];
 const COLOR_HEAD: [number, number, number] = [0.68, 0.72, 0.62];
 const COLOR_APPLE_BORDER: [number, number, number] = [0.86, 0.18, 0.11];
 const COLOR_APPLE_FILL: [number, number, number] = [0.58, 0.11, 0.08];
-
-const obstacleCases = OBSTACLES
-  .map(([x, y]) => `  if (cell == ${y * GRID + x}u) { return true; }`)
-  .join('\n');
 
 const shader = /* wgsl */ `
 struct Uniforms {
@@ -83,11 +79,6 @@ fn bodyCell(base: u32, ii: u32) -> bool {
   return ((word >> (ii & 31u)) & 1u) == 1u;
 }
 
-fn obstacleCell(cell: u32) -> bool {
-${obstacleCases}
-  return false;
-}
-
 @vertex
 fn vsFrame(@builtin(vertex_index) vi: u32) -> VertexOutput {
   return cellQuad(QUAD[vi], vec2f(${GRID / 2}.0, ${GRID / 2}.0), ${GRID}.0, vec4f(${COLOR_CELL_EDGE}, 1.0));
@@ -117,30 +108,9 @@ fn vsCellInset(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
 }
 
 @vertex
-fn vsObstacleBorder(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
-  if (!obstacleCell(ii)) { return deadOut(); }
-  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
-  return cellQuad(QUAD[vi], center, 0.84, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
-}
-
-@vertex
-fn vsObstaclePad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
-  if (!obstacleCell(ii)) { return deadOut(); }
-  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
-  return cellQuad(QUAD[vi], center, 0.72, vec4f(${COLOR_CELL_FACE}, 1.0));
-}
-
-@vertex
-fn vsObstacleFill(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
-  if (!obstacleCell(ii)) { return deadOut(); }
-  let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
-  return cellQuad(QUAD[vi], center, 0.62, vec4f(${COLOR_BODY}, 1.0));
-}
-
-@vertex
 fn vsBodyBorder(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
-  if (!bodyCell(base, ii) || obstacleCell(ii)) { return deadOut(); }
+  if (!bodyCell(base, ii)) { return deadOut(); }
   let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
   return cellQuad(QUAD[vi], center, 0.84, vec4f(${COLOR_DARK_OUTLINE}, 1.0));
 }
@@ -148,7 +118,7 @@ fn vsBodyBorder(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32
 @vertex
 fn vsBodyPad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
-  if (!bodyCell(base, ii) || obstacleCell(ii)) { return deadOut(); }
+  if (!bodyCell(base, ii)) { return deadOut(); }
   let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
   return cellQuad(QUAD[vi], center, 0.70, vec4f(${COLOR_CELL_FACE}, 1.0));
 }
@@ -156,7 +126,7 @@ fn vsBodyPad(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 @vertex
 fn vsBodyFill(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
   let base = uni.bestIndex * AGENT_FLOATS;
-  if (!bodyCell(base, ii) || obstacleCell(ii)) { return deadOut(); }
+  if (!bodyCell(base, ii)) { return deadOut(); }
   let center = vec2f(f32(ii % ${GRID}u) + 0.5, f32(ii / ${GRID}u) + 0.5);
   return cellQuad(QUAD[vi], center, 0.50, vec4f(${COLOR_BODY}, 1.0));
 }
@@ -226,9 +196,6 @@ const ENTRIES = [
   'vsCellEdge',
   'vsCellFace',
   'vsCellInset',
-  'vsObstacleBorder',
-  'vsObstaclePad',
-  'vsObstacleFill',
   'vsBodyBorder',
   'vsBodyPad',
   'vsBodyFill',
@@ -340,12 +307,6 @@ export class SnakeRenderer {
     pass.setPipeline(this.pipelines.vsCellFace);
     pass.draw(6, CELLS);
     pass.setPipeline(this.pipelines.vsCellInset);
-    pass.draw(6, CELLS);
-    pass.setPipeline(this.pipelines.vsObstacleBorder);
-    pass.draw(6, CELLS);
-    pass.setPipeline(this.pipelines.vsObstaclePad);
-    pass.draw(6, CELLS);
-    pass.setPipeline(this.pipelines.vsObstacleFill);
     pass.draw(6, CELLS);
     pass.setPipeline(this.pipelines.vsBodyBorder);
     pass.draw(6, CELLS);

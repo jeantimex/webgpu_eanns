@@ -15,7 +15,7 @@ struct SimParams {
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
-@group(0) @binding(1) var<storage, read> genomes: array<f32>; // 243 weights per agent [16, 12, 3]
+@group(0) @binding(1) var<storage, read> genomes: array<f32>; // 740 weights per agent [24, 16, 16, 4]
 @group(0) @binding(2) var<storage, read_write> agents: array<f32>;
 
 // Agent layout (must match A in snake_buffers.ts).
@@ -38,15 +38,22 @@ const A_RING = ${A.ring}u;
 
 const AGENT_FLOATS = ${AGENT_FLOATS}u;
 const GENOME_FLOATS = ${SNAKE_GENOME_SIZE}u;
-const INPUTS = 16u;
-const HIDDEN = 12u;
-const OUTPUTS = 3u;
 const GRID = ${GRID};
 const GRID_U = ${GRID}u;
 const CELLS = ${CELLS}u;
 const MASK_WORDS = ${MASK_WORDS}u;
-const STALL = 200.0;
+const LIFE_MAX = 500.0;
 const MAX_MOVES = 10000.0;
+
+// SnakeAI vision: 8 compass directions (W, NW, N, NE, E, SE, S, SW).
+const DIRS = array<vec2i, 8>(
+  vec2i(-1, 0), vec2i(-1, -1), vec2i(0, -1), vec2i(1, -1),
+  vec2i(1, 0), vec2i(1, 1), vec2i(0, 1), vec2i(-1, 1)
+);
+
+fn activate(x: f32) -> f32 {
+  return max(0.0, x);
+};
 
 fn dirVec(d: u32) -> vec2f {
   switch d {
@@ -54,24 +61,6 @@ fn dirVec(d: u32) -> vec2f {
     case 1u: { return vec2f(0.0, 1.0); }
     case 2u: { return vec2f(-1.0, 0.0); }
     default: { return vec2f(1.0, 0.0); }
-  }
-}
-
-fn leftOf(d: u32) -> u32 {
-  switch d {
-    case 0u: { return 2u; }
-    case 2u: { return 1u; }
-    case 1u: { return 3u; }
-    default: { return 0u; }
-  }
-}
-
-fn rightOf(d: u32) -> u32 {
-  switch d {
-    case 0u: { return 3u; }
-    case 3u: { return 1u; }
-    case 1u: { return 2u; }
-    default: { return 0u; }
   }
 }
 
@@ -118,110 +107,81 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let ax = agents[b + A_APPLE_X];
   let ay = agents[b + A_APPLE_Y];
 
-  // --- NN inputs (16) ---
-  let dl = leftOf(dir);
-  let dr = rightOf(dir);
-  let dvS = dirVec(dir);
-  let dvL = dirVec(dl);
-  let dvR = dirVec(dr);
-  let appleVec = vec2f(ax - hx, ay - hy);
-
-  var inputs: array<f32, 16>;
-  // 0-2: danger straight/left/right one step out (wall or body)
-  let cS = vec2i(i32(hx + dvS.x), i32(hy + dvS.y));
-  let cL = vec2i(i32(hx + dvL.x), i32(hy + dvL.y));
-  let cR = vec2i(i32(hx + dvR.x), i32(hy + dvR.y));
-  inputs[0] = select(0.0, 1.0, cS.x < 0 || cS.x >= GRID || cS.y < 0 || cS.y >= GRID || bodyBit(b, u32(clamp(cS.y * GRID + cS.x, 0, GRID * GRID - 1))) == 1u);
-  inputs[1] = select(0.0, 1.0, cL.x < 0 || cL.x >= GRID || cL.y < 0 || cL.y >= GRID || bodyBit(b, u32(clamp(cL.y * GRID + cL.x, 0, GRID * GRID - 1))) == 1u);
-  inputs[2] = select(0.0, 1.0, cR.x < 0 || cR.x >= GRID || cR.y < 0 || cR.y >= GRID || bodyBit(b, u32(clamp(cR.y * GRID + cR.x, 0, GRID * GRID - 1))) == 1u);
-  // 3-5: free distance straight/left/right (/grid)
-  for (var d = 0u; d < 3u; d++) {
-    let dv = select(dvS, select(dvL, dvR, d == 2u), d == 1u);
+  // --- SnakeAI vision (24 inputs): per direction, [food flag, body flag, 1/dist] ---
+  var inputs: array<f32, 24>;
+  for (var d = 0u; d < 8u; d++) {
+    var px = i32(hx);
+    var py = i32(hy);
+    var foodFlag = 0.0;
+    var bodyFlag = 0.0;
     var dist = 0;
-    for (var s = 1; s <= GRID; s++) {
-      let cc = i32(hx + dv.x * f32(s));
-      let rr = i32(hy + dv.y * f32(s));
-      if (cc < 0 || cc >= GRID || rr < 0 || rr >= GRID || bodyBit(b, u32(rr * GRID + cc)) == 1u) { break; }
-      dist = s;
+    loop {
+      px += DIRS[d].x;
+      py += DIRS[d].y;
+      dist++;
+      if (px < 0 || px >= GRID || py < 0 || py >= GRID) { break; }
+      if (foodFlag == 0.0 && f32(px) == ax && f32(py) == ay) { foodFlag = 1.0; }
+      if (bodyFlag == 0.0 && bodyBit(b, u32(py * GRID + px)) == 1u) { bodyFlag = 1.0; }
     }
-  inputs[3u + d] = f32(dist) / f32(GRID);
+    inputs[d * 3u] = foodFlag;
+    inputs[d * 3u + 1u] = bodyFlag;
+    inputs[d * 3u + 2u] = 1.0 / f32(dist);
   }
-  // 6-7: apple delta (/grid)
-  inputs[6] = clamp((ax - hx) / f32(GRID), -1.0, 1.0);
-  inputs[7] = clamp((ay - hy) / f32(GRID), -1.0, 1.0);
-  // 8-9: current direction vector
-  inputs[8] = dvS.x;
-  inputs[9] = dvS.y;
-  // 10: length / cells
-  inputs[10] = agents[b + A_LENGTH] / f32(CELLS);
-  // 11: stall clock (/200)
-  inputs[11] = clamp(agents[b + A_SINCE_EAT] / STALL, 0.0, 1.0);
-  // 12-13: tail delta (/grid) — long snakes must not lose their own tail
-  let tailCell = ringRead(b, u32(agents[b + A_RING_TAIL]));
-  inputs[12] = clamp((f32(tailCell % GRID_U) - hx) / f32(GRID), -1.0, 1.0);
-  inputs[13] = clamp((f32(tailCell / GRID_U) - hy) / f32(GRID), -1.0, 1.0);
-  // 14-15: apple in the snake's local frame. Positive fwd = ahead;
-  // positive right = apple is to the right. This makes greedy turns easy.
-  inputs[14] = clamp(dot(appleVec, dvS) / f32(GRID), -1.0, 1.0);
-  inputs[15] = clamp(dot(appleVec, dvR) / f32(GRID), -1.0, 1.0);
 
-  // --- Forward pass [16 -> 12 -> 3]: relu hidden, linear outputs, argmax turn. ---
+  // --- Forward pass [24 -> 16 -> 16 -> 4], ReLU everywhere (SnakeAI). ---
   var offset = i * GENOME_FLOATS;
-  var hidden: array<f32, 12>;
-  for (var h = 0u; h < 12u; h++) {
-    var sum = genomes[offset + INPUTS * HIDDEN + h]; // bias row
-    for (var k = 0u; k < INPUTS; k++) {
-      sum += inputs[k] * genomes[offset + k * HIDDEN + h];
+  var h1: array<f32, 16>;
+  for (var h = 0u; h < 16u; h++) {
+    var sum = genomes[offset + 384u + h]; // bias row
+    for (var k = 0u; k < 24u; k++) {
+      sum += inputs[k] * genomes[offset + k * 16u + h];
     }
-    hidden[h] = max(sum, 0.0);
+    h1[h] = activate(sum);
   }
-  offset += (INPUTS + 1u) * HIDDEN;
-  var bestOut = -1e30;
-  var turn = 1u; // 0=left, 1=straight, 2=right
-  for (var j = 0u; j < OUTPUTS; j++) {
-    var sum = genomes[offset + HIDDEN * OUTPUTS + j]; // bias row
-    for (var h = 0u; h < 12u; h++) {
-      sum += hidden[h] * genomes[offset + h * OUTPUTS + j];
+  offset += 400u; // 25x16
+  var h2: array<f32, 16>;
+  for (var h = 0u; h < 16u; h++) {
+    var sum = genomes[offset + 256u + h]; // bias row
+    for (var k = 0u; k < 16u; k++) {
+      sum += h1[k] * genomes[offset + k * 16u + h];
     }
+    h2[h] = activate(sum);
+  }
+  offset += 272u; // 17x16
+  var bestOut = -1e30;
+  var newDir = dir;
+  for (var j = 0u; j < 4u; j++) {
+    var sum = genomes[offset + 64u + j]; // bias row
+    for (var h = 0u; h < 16u; h++) {
+      sum += h2[h] * genomes[offset + h * 4u + j];
+    }
+    sum = activate(sum);
     if (sum > bestOut) {
       bestOut = sum;
-      turn = j;
+      newDir = j;
     }
   }
-  if (turn == 0u) { dir = dl; }
-  else if (turn == 2u) { dir = dr; }
+  // Absolute directions with the no-reverse guard (moveUp/Down/Left/Right).
+  if (dir > 3u || newDir != (dir ^ 1u)) {
+    dir = newDir;
+  }
   agents[b + A_DIR] = f32(dir);
 
-  // --- Move ---
-  let dv = dirVec(dir);
-  let oldDist = abs(ax - hx) + abs(ay - hy);
-  let nx = i32(hx + dv.x);
-  let ny = i32(hy + dv.y);
-  if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
-    agents[b + A_OVER] = 1.0;
-    return;
-  }
-  let cell = u32(ny * GRID + nx);
-  if (bodyBit(b, cell) == 1u) {
-    agents[b + A_OVER] = 1.0;
-    return;
-  }
-  setBodyBit(b, cell, true);
-  ringWrite(b, u32(agents[b + A_RING_HEAD]), cell);
-  agents[b + A_RING_HEAD] = f32((u32(agents[b + A_RING_HEAD]) + 1u) % CELLS);
-  agents[b + A_HEAD_X] = f32(nx);
-  agents[b + A_HEAD_Y] = f32(ny);
-  let newDist = abs(ax - f32(nx)) + abs(ay - f32(ny));
-  agents[b + A_SCORE] = agents[b + A_SCORE] + (oldDist - newDist) * 0.2 - 0.01;
+  // SnakeAI counts the attempted move before resolving food/collisions.
+  agents[b + A_MOVES] = f32(u32(agents[b + A_MOVES]) + 1u);
+  agents[b + A_SINCE_EAT] = agents[b + A_SINCE_EAT] - 1.0;
 
-  if (f32(nx) == ax && f32(ny) == ay) {
-    // Ate the apple: grow (no tail pop), respawn on a random empty cell.
+  var grow = false;
+  if (hx == ax && hy == ay) {
+    // Food is consumed at the start of a tick when the head is on it, matching SnakeAI.
     agents[b + A_APPLES] = agents[b + A_APPLES] + 1.0;
     agents[b + A_LENGTH] = agents[b + A_LENGTH] + 1.0;
-    agents[b + A_SCORE] = agents[b + A_SCORE] + 25.0 + agents[b + A_LENGTH] * 0.25;
-    agents[b + A_SINCE_EAT] = 0.0;
+    agents[b + A_SCORE] = agents[b + A_SCORE] + 1.0;
+    let life = agents[b + A_SINCE_EAT];
+    agents[b + A_SINCE_EAT] = select(life + 100.0, LIFE_MAX, life > 400.0);
+    grow = true;
+
     var rng = nextRand(bitcast<u32>(agents[b + A_RNG]));
-    agents[b + A_RNG] = bitcast<f32>(rng);
     var spawn = rng % CELLS;
     for (var k = 0u; k < CELLS; k++) {
       let cand = (spawn + k) % CELLS;
@@ -231,16 +191,37 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         break;
       }
     }
-  } else {
+    agents[b + A_RNG] = bitcast<f32>(rng);
+  }
+
+  // --- Move ---
+  let dv = dirVec(dir);
+  let nx = i32(hx + dv.x);
+  let ny = i32(hy + dv.y);
+  if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
+    agents[b + A_OVER] = 1.0;
+    return;
+  }
+  let cell = u32(ny * GRID + nx);
+  let tailCell = ringRead(b, u32(agents[b + A_RING_TAIL]));
+  if (bodyBit(b, cell) == 1u && (grow || cell != tailCell)) {
+    agents[b + A_OVER] = 1.0;
+    return;
+  }
+  setBodyBit(b, cell, true);
+  ringWrite(b, u32(agents[b + A_RING_HEAD]), cell);
+  agents[b + A_RING_HEAD] = f32((u32(agents[b + A_RING_HEAD]) + 1u) % CELLS);
+  agents[b + A_HEAD_X] = f32(nx);
+  agents[b + A_HEAD_Y] = f32(ny);
+
+  if (!grow) {
     // No apple: pop the tail.
-    let tc = ringRead(b, u32(agents[b + A_RING_TAIL]));
-    setBodyBit(b, tc, false);
+    setBodyBit(b, tailCell, false);
     agents[b + A_RING_TAIL] = f32((u32(agents[b + A_RING_TAIL]) + 1u) % CELLS);
   }
 
-  agents[b + A_MOVES] = f32(u32(agents[b + A_MOVES]) + 1u);
-  agents[b + A_SINCE_EAT] = agents[b + A_SINCE_EAT] + 1.0;
-  if (agents[b + A_SINCE_EAT] > STALL || agents[b + A_MOVES] >= MAX_MOVES || agents[b + A_LENGTH] >= f32(CELLS)) {
+  // Move budget: starve at 0 (loops die; eaters keep going).
+  if (agents[b + A_SINCE_EAT] <= 0.0 || agents[b + A_MOVES] >= MAX_MOVES || agents[b + A_LENGTH] >= f32(CELLS)) {
     agents[b + A_OVER] = 1.0;
   }
 }
