@@ -1,4 +1,3 @@
-import { nextCrossoverGeneration } from '../../utils/ga';
 import { mulberry32, type Rng } from '../../utils/rng';
 import {
   A,
@@ -11,6 +10,53 @@ import {
 } from './pacman_buffers';
 import { pacmanShader } from './pacman.wgsl';
 import { autosavePacmanBest } from './pacman_model';
+
+const WEIGHT_MIN = 1e-5;
+const WEIGHT_MAX = 20;
+const ELITE_COUNT = 5;
+const TOURNAMENT_SIZE = 5;
+const CROSSOVER_PROB = 0.7;
+const CROSSOVER_ALPHA = 0.7;
+const MUTATION_PROB = 0.6;
+
+function randomWeight(rng: Rng): number {
+  return WEIGHT_MIN + rng() * (WEIGHT_MAX - WEIGHT_MIN);
+}
+
+function tournamentPick(population: Float64Array[], fitnesses: ArrayLike<number>, rng: Rng): Float64Array {
+  let best = Math.floor(rng() * population.length);
+  for (let k = 1; k < Math.min(TOURNAMENT_SIZE, population.length); k++) {
+    const candidate = Math.floor(rng() * population.length);
+    if (fitnesses[candidate] > fitnesses[best]) best = candidate;
+  }
+  return population[best];
+}
+
+function nextWeightedVectorGeneration(population: Float64Array[], fitnesses: ArrayLike<number>, rng: Rng): Float64Array[] {
+  const order = population.map((_, i) => i).sort((a, b) => fitnesses[b] - fitnesses[a]);
+  const next: Float64Array[] = [];
+  for (let i = 0; i < Math.min(ELITE_COUNT, population.length); i++) {
+    next.push(population[order[i]].slice());
+  }
+
+  while (next.length < population.length) {
+    const p1 = tournamentPick(population, fitnesses, rng);
+    const p2 = tournamentPick(population, fitnesses, rng);
+    const child = p1.slice();
+    if (rng() <= CROSSOVER_PROB) {
+      const cut = Math.min(PACMAN_GENOME_SIZE, Math.floor(rng() * PACMAN_GENOME_SIZE) + 1);
+      for (let k = cut; k < PACMAN_GENOME_SIZE; k++) {
+        child[k] = CROSSOVER_ALPHA * p1[k] + (1 - CROSSOVER_ALPHA) * p2[k];
+      }
+    }
+    if (rng() <= MUTATION_PROB) {
+      child[Math.floor(rng() * 4)] = randomWeight(rng);
+      child[4 + Math.floor(rng() * 4)] = randomWeight(rng);
+    }
+    next.push(child);
+  }
+  return next;
+}
 
 export interface BestAgentSnapshot {
   index: number;
@@ -25,9 +71,9 @@ export interface BestAgentSnapshot {
 }
 
 /**
- * Generation driver. Each agent plays a full game (3 attempts, level resets,
- * 6-minute cap) inside the compute shader — there is no shared world state, so
- * a generation is a fixed number of dispatches followed by a GA step.
+ * Generation driver. Each agent plays one full attempt (or until the 6-minute
+ * cap) inside the compute shader — there is no shared world state, so a
+ * generation is a fixed number of dispatches followed by a GA step.
  */
 export class PacmanEvolution {
   generation = 1;
@@ -44,6 +90,8 @@ export class PacmanEvolution {
   private bestGeneration = 1;
   private readPending: Promise<Float32Array<ArrayBuffer>> | null = null;
   private isEvolving = false;
+  private playMode = false;
+  private episodeSeed = 1;
 
   private constructor(
     private readonly device: GPUDevice,
@@ -55,7 +103,7 @@ export class PacmanEvolution {
     this.displayIndex = populationSize;
     this.genomes = Array.from({ length: buffers.totalAgents }, () => {
       const g = new Float64Array(PACMAN_GENOME_SIZE);
-      for (let k = 0; k < PACMAN_GENOME_SIZE; k++) g[k] = this.rng() * 2 - 1;
+      for (let k = 0; k < PACMAN_GENOME_SIZE; k++) g[k] = randomWeight(this.rng);
       return g;
     });
     this.bestGenome = new Float64Array(this.genomes[0]);
@@ -103,19 +151,24 @@ export class PacmanEvolution {
     };
   }
 
-  injectBest(weights: Float64Array): void {
+  injectBest(weights: Float64Array, eval_ = 0, score = 0, generation = this.generation): void {
     this.genomes[0] = weights.slice();
     this.genomes[this.displayIndex] = weights.slice();
     this.bestGenome = weights.slice();
-    this.bestFitness = Infinity;
-    this.bestScore = 0;
-    this.bestGeneration = this.generation;
+    this.bestFitness = eval_;
+    this.bestScore = score;
+    this.bestGeneration = generation;
     this.uploadGenomes();
     this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents));
   }
 
   setPlayMode(playMode: boolean): void {
-    const paramsData = new Uint32Array([this.buffers.totalAgents, this.populationSize, playMode ? 1 : 0, 0]);
+    this.playMode = playMode;
+    this.writeParams();
+  }
+
+  private writeParams(): void {
+    const paramsData = new Uint32Array([this.buffers.totalAgents, this.populationSize, this.playMode ? 1 : 0, this.episodeSeed]);
     this.device.queue.writeBuffer(this.buffers.params, 0, paramsData);
   }
 
@@ -127,6 +180,13 @@ export class PacmanEvolution {
 
   resetDisplayAgent(): void {
     this.resetAgent(this.displayIndex);
+  }
+
+  async restartTestAgentIfDead(): Promise<void> {
+    const states = await this.readStates();
+    if (states[A.gameOver] > 0.5) {
+      this.resetAgent(0);
+    }
   }
 
   private uploadGenomes(): void {
@@ -182,30 +242,12 @@ export class PacmanEvolution {
       }
       if (aliveCount > 0) return;
 
-      // GA sees final episode fitness: completion is the top signal,
-      // then faster completion, pellet progress, and movement as a tie-breaker.
+      // MatheusPaixaoG/Pacman-with-GA uses final game score as fitness.
       const fitnesses = new Float64Array(this.populationSize);
       for (let i = 0; i < this.populationSize; i++) {
         const o = i * AGENT_FLOATS;
         const score = states[o + A.score];
-        const dotsLeft = states[o + A.dotsLeft];
-        const pelletsEaten = 244 - dotsLeft;
-        const moveTicks = states[o + A.moveTicks];
-        const pelletProgress = states[o + A.pelletProgress];
-        const totalReward = states[o + A.totalReward];
-        const ticks = Math.max(1, states[o + A.ticks]);
-        const scoreRate = score / ticks;
-        const finished = dotsLeft <= 0 ? 1 : 0;
-        const fitness =
-          pelletsEaten * 500 +
-          score * 100 +
-          pelletProgress * 50 +
-          scoreRate * 10000 +
-          finished * 1_000_000 +
-          finished * (21600 - ticks) * 100 +
-          Math.max(-500, totalReward * 10) +
-          moveTicks * 0.1;
-        fitnesses[i] = Math.max(1, fitness);
+        fitnesses[i] = Math.max(1, score);
         if (fitnesses[i] > this.bestFitness) {
           this.bestFitness = fitnesses[i];
           this.bestScore = score;
@@ -215,15 +257,11 @@ export class PacmanEvolution {
           autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore);
         }
       }
-      const next = nextCrossoverGeneration(
-        this.genomes.slice(0, this.populationSize),
-        fitnesses,
-        this.rng,
-        PACMAN_TOPOLOGY,
-        { eliteCount: 8, mutateRate: 0.05, sigma: 0.1, clamp: 1.0 },
-      );
+      const next = nextWeightedVectorGeneration(this.genomes.slice(0, this.populationSize), fitnesses, this.rng);
       this.genomes = [...next, new Float64Array(this.bestGenome)];
       this.generation++;
+      this.episodeSeed = Math.floor(this.rng() * 0xffffffff) >>> 0;
+      this.writeParams();
       this.uploadGenomes();
       this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents));
     } finally {
@@ -231,17 +269,32 @@ export class PacmanEvolution {
     }
   }
 
-  /** Snapshot of the highest-score agent still playing (falls back to best overall), for the HUD/renderer. */
+  /** Snapshot of the most successful visible agent. Train mode follows the current population; Play mode follows the player/best replay slot. */
   async readBestAgentState(): Promise<BestAgentSnapshot> {
     const states = await this.readStates();
     let aliveCount = 0;
+    let shown = this.displayIndex;
+    let bestDotsLeft = Infinity;
+    let bestScore = -Infinity;
+    let bestTicks = Infinity;
     for (let i = 0; i < this.populationSize; i++) {
       const o = i * AGENT_FLOATS;
       if (states[o + A.gameOver] < 0.5) {
         aliveCount++;
+        if (!this.playMode) {
+          const dotsLeft = states[o + A.dotsLeft];
+          const score = states[o + A.score];
+          const ticks = states[o + A.ticks];
+          if (dotsLeft < bestDotsLeft || (dotsLeft === bestDotsLeft && (score > bestScore || (score === bestScore && ticks < bestTicks)))) {
+            shown = i;
+            bestDotsLeft = dotsLeft;
+            bestScore = score;
+            bestTicks = ticks;
+          }
+        }
       }
     }
-    const shown = this.displayIndex;
+    if (!this.playMode && this.populationSize === 1) shown = 0;
     const o = shown * AGENT_FLOATS;
     return {
       index: shown,

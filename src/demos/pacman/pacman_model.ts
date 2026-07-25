@@ -7,6 +7,7 @@ export interface PacmanModel {
 }
 
 const STORAGE_KEY = 'eanns:best:pacman';
+const TEST_KEY = 'eanns:testModel:pacman';
 
 function validateWeights(weights: unknown): Float64Array {
   if (!Array.isArray(weights) || weights.length !== PACMAN_GENOME_SIZE || !weights.every((w) => Number.isFinite(w))) {
@@ -35,6 +36,20 @@ export function savePacmanModel(weights: Float64Array, meta: PacmanModel['meta']
 
 export async function loadPacmanModelFile(file: File): Promise<Float64Array> {
   return parsePacmanModelText(await file.text());
+}
+
+export function savePacmanTestModel(weights: Float64Array): void {
+  localStorage.setItem(TEST_KEY, JSON.stringify([...weights]));
+}
+
+export function loadPacmanTestModel(): Float64Array | null {
+  const text = localStorage.getItem(TEST_KEY);
+  if (!text) return null;
+  try {
+    return validateWeights(JSON.parse(text));
+  } catch {
+    return null;
+  }
 }
 
 export function autosavePacmanBest(weights: Float64Array, generation: number, eval_: number, score: number): void {

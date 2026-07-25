@@ -1,11 +1,11 @@
 import '../../style.css';
-import { currentSettings } from '../../gui/controls_gui';
+import { currentSettings, persistMode, updateSetting } from '../../gui/controls_gui';
 import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
 import { PacmanEvolution, type BestAgentSnapshot } from './pacman_evolution';
-import { loadPacmanModelFile, loadSavedPacmanBest, savePacmanModel } from './pacman_model';
+import { loadPacmanModelFile, loadPacmanTestModel, loadSavedPacmanBest, savePacmanModel, savePacmanTestModel } from './pacman_model';
 import { PacmanRenderer } from './pacman_renderer';
 
 const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
@@ -52,13 +52,22 @@ async function main(): Promise<void> {
   document.body.classList.add('snake-layout');
   const gpu = await initializeWebGPU(canvas);
   const settings = currentSettings();
+  let isTest = settings.mode === 'Test';
+  let noModelWarning = false;
+  const testModel = loadPacmanTestModel();
+  if (isTest && !testModel) {
+    isTest = false;
+    noModelWarning = true;
+    persistMode('Train');
+  }
 
-  const evolution = PacmanEvolution.init(gpu.device, settings.population);
+  const evolution = PacmanEvolution.init(gpu.device, isTest ? 1 : settings.population);
+  if (isTest) evolution.injectBest(testModel!);
   const renderer = await PacmanRenderer.create(canvas, gpu, evolution.buffers);
   const hud = createHud();
   const networkPanel = new NetworkPanel(PacmanEvolution.topology, {
     variant: 'snake',
-    outputLabels: ['UP', 'RIGHT', 'DOWN', 'LEFT'],
+    outputLabels: ['NORMAL', 'POWER'],
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
   });
 
@@ -91,6 +100,10 @@ async function main(): Promise<void> {
       }
     });
   }
+  if (noModelWarning) {
+    showMessage('Test mode needs a model - starting in Train mode. Use "Load model file" to test one.');
+    setTimeout(() => message.classList.remove('visible'), 6000);
+  }
 
   const controls = createDemoSettingsPanel(settings, {
     onSaveModel: () => {
@@ -102,12 +115,14 @@ async function main(): Promise<void> {
         showMessage('No saved best model found for Pac-Man.');
         return;
       }
-      evolution.injectBest(saved.weights);
+      savePacmanTestModel(saved.weights);
+      updateSetting('mode', 'Test');
     },
     onLoadModelFile: async (file) => {
       try {
         const weights = await loadPacmanModelFile(file);
-        evolution.injectBest(weights);
+        savePacmanTestModel(weights);
+        updateSetting('mode', 'Test');
       } catch (err) {
         showError(err);
       }
@@ -124,13 +139,15 @@ async function main(): Promise<void> {
     const steps = Math.min(Math.floor(acc), 240);
     acc -= steps;
     if (steps > 0 && !waiting) evolution.substeps(steps);
-    if (!isPlayMode) {
+    if (isTest) {
+      void evolution.restartTestAgentIfDead();
+    } else if (!isPlayMode) {
       void evolution.checkAndEvolve();
     }
     void evolution.readBestAgentState().then((best) => {
       renderer.setBestIndex(best.index);
-      hud.update(best, isPlayMode ? 0 : evolution.generation);
-      networkPanel.draw(evolution.displayGenome(), {
+      hud.update(best, isPlayMode || isTest ? 0 : evolution.generation);
+      networkPanel.draw(evolution.genomeAt(best.index), {
         stats: isPlayMode
           ? [
               ['MODE', 'PLAY'],
@@ -139,6 +156,14 @@ async function main(): Promise<void> {
               ['LEVEL', best.level],
               ['STATUS', waiting ? 'READY (Press Arrow Key)' : best.gameOver ? 'GAME OVER (Press Arrow Key)' : 'PLAYING'],
             ]
+          : isTest
+            ? [
+                ['MODE', 'TEST'],
+                ['SCORE', best.score],
+                ['DOTS', best.dotsLeft],
+                ['LEVEL', best.level],
+                ['STATUS', best.gameOver ? 'RESTARTING' : 'RUNNING'],
+              ]
           : [
               ['GEN', evolution.generation],
               ['SCORE', best.score],
