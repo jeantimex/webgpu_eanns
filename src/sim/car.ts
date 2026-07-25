@@ -45,7 +45,7 @@ export interface CarState {
   angleDeg: number;
   vel: number;
   alive: boolean;
-  /** Index of the next checkpoint to capture; starts at 1 ([0] is the start line). */
+  /** Index of the next checkpoint to capture; starts at 0 (the start line — the spawn may lie before it). */
   cpIndex: number;
   timeSinceCp: number;
   fitness: number;
@@ -60,7 +60,7 @@ export function initCarState(track: Track): CarState {
     angleDeg: track.start.angleDeg,
     vel: 0,
     alive: true,
-    cpIndex: 1,
+    cpIndex: 0,
     timeSinceCp: 0,
     fitness: 0,
     outputs: [0, 0],
@@ -213,6 +213,8 @@ export function stepCar(
     state.cpIndex = idx;
     if (idx >= cps.length) {
       state.fitness = 1;
+    } else if (idx === 0) {
+      state.fitness = 0; // not yet across the start line (distToPrev[0] is 0)
     } else {
       const complete = Math.max(0, (table.distToPrev[idx] - dist) / table.distToPrev[idx]);
       state.fitness = f32(table.accReward[idx - 1] + complete * table.reward[idx]);

@@ -226,6 +226,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     car.cpIndex = idx;
     if (idx >= params.cpCount) {
       car.fitness = 1.0;
+    } else if (idx == 0u) {
+      car.fitness = 0.0; // not yet across the start line (distToPrev[0] is 0)
     } else {
       let cp = checkpoints[idx];
       let complete = max((cp.distToPrev - dist) / cp.distToPrev, 0.0);

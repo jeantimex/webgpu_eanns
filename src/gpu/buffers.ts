@@ -23,7 +23,7 @@ export interface SimBuffers {
   cpCount: number;
 }
 
-/** All cars at the track start, alive, targeting checkpoint 1. */
+/** All cars at the track start, alive, targeting checkpoint 0 (the start line — the spawn may lie before it). */
 export function initialCarStates(track: Track, count: number): Float32Array<ArrayBuffer> {
   const states = new Float32Array(count * CAR_FLOATS);
   for (let i = 0; i < count; i++) {
@@ -33,7 +33,7 @@ export function initialCarStates(track: Track, count: number): Float32Array<Arra
     states[o + 2] = track.start.angleDeg;
     // alive and cpIndex are u32 in the WGSL struct: write the bits, not float 1.0.
     new Uint32Array(states.buffer)[o + 4] = 1;
-    new Uint32Array(states.buffer)[o + 5] = 1;
+    new Uint32Array(states.buffer)[o + 5] = 0;
   }
   return states;
 }
