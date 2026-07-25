@@ -1,5 +1,6 @@
 import '../../style.css';
-import { currentSettings, setupControls } from '../../gui/controls_gui';
+import { currentSettings } from '../../gui/controls_gui';
+import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
@@ -88,18 +89,23 @@ function createPanel(): { update(best: BestTetrisSnapshot, generation: number): 
 }
 
 async function main(): Promise<void> {
+  document.body.classList.add('snake-layout');
   const gpu = await initializeWebGPU(canvas);
   const settings = currentSettings();
 
   const evolution = TetrisEvolution.init(gpu.device, settings.population);
   const renderer = new TetrisRenderer(canvas, gpu, evolution.buffers);
   const panel = createPanel();
-  const networkPanel = new NetworkPanel([15, 8, 1]);
+  const networkPanel = new NetworkPanel([15, 8, 1], {
+    variant: 'snake',
+    outputLabels: ['PLACE'],
+    onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
+  });
 
   const notWired = (): void => {
     showMessage('Model save/load is not wired up for Tetris yet.');
   };
-  const controls = setupControls({
+  const controls = createDemoSettingsPanel(settings, {
     onSaveModel: notWired,
     onLoadSavedBest: notWired,
     onLoadModelFile: notWired,
@@ -118,7 +124,15 @@ async function main(): Promise<void> {
     void evolution.readBestAgentState().then((best) => {
       renderer.setBestIndex(best.index);
       panel.update(best, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index));
+      networkPanel.draw(evolution.genomeAt(best.index), {
+        stats: [
+          ['GEN', evolution.generation],
+          ['SCORE', best.score],
+          ['LINES', best.lines],
+          ['LEVEL', best.level],
+          ['POP LEFT', best.aliveCount],
+        ],
+      });
     });
     renderer.render(evolution.tickCount);
     requestAnimationFrame(loop);

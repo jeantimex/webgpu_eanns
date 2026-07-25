@@ -1,5 +1,6 @@
 import '../../style.css';
-import { currentSettings, setupControls } from '../../gui/controls_gui';
+import { currentSettings } from '../../gui/controls_gui';
+import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
@@ -46,18 +47,23 @@ function createHud(): { update(best: BestDinoSnapshot, cleared: number, generati
 }
 
 async function main(): Promise<void> {
+  document.body.classList.add('snake-layout');
   const gpu = await initializeWebGPU(canvas);
   const settings = currentSettings();
 
   const evolution = DinoEvolution.init(gpu.device, settings.population);
   const renderer = await DinoRenderer.create(canvas, gpu, evolution.buffers);
   const hud = createHud();
-  const networkPanel = new NetworkPanel([6, 8, 1]);
+  const networkPanel = new NetworkPanel([6, 8, 1], {
+    variant: 'snake',
+    outputLabels: ['JUMP'],
+    onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
+  });
 
   const notWired = (): void => {
     showMessage('Model save/load is not wired up for Chrome Dino yet.');
   };
-  const controls = setupControls({
+  const controls = createDemoSettingsPanel(settings, {
     onSaveModel: notWired,
     onLoadSavedBest: notWired,
     onLoadModelFile: notWired,
@@ -76,7 +82,16 @@ async function main(): Promise<void> {
     void evolution.readBestDinoState().then((best) => {
       renderer.setBestIndex(best.index);
       hud.update(best, evolution.cleared, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index));
+      networkPanel.draw(evolution.genomeAt(best.index), {
+        stats: [
+          ['GEN', evolution.generation],
+          ['SCORE', Math.floor(best.score / 7)],
+          ['CLEARED', evolution.cleared],
+          ['POP LEFT', best.aliveCount],
+          ['FITNESS', best.fitness.toFixed(1)],
+          ['SPEED', evolution.gamespeed.toFixed(1)],
+        ],
+      });
     });
     renderer.render(evolution.obstacle, evolution.groundScroll, evolution.runFrame);
     requestAnimationFrame(loop);

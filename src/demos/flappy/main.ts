@@ -1,5 +1,6 @@
 import '../../style.css';
-import { currentSettings, setupControls } from '../../gui/controls_gui';
+import { currentSettings } from '../../gui/controls_gui';
+import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
@@ -45,18 +46,23 @@ function createHud(): { update(best: BestBirdSnapshot, generation: number): void
 }
 
 async function main(): Promise<void> {
+  document.body.classList.add('snake-layout');
   const gpu = await initializeWebGPU(canvas);
   const settings = currentSettings();
 
   const evolution = FlappyEvolution.init(gpu.device, settings.population);
   const renderer = await FlappyRenderer.create(canvas, gpu, evolution.buffers);
   const hud = createHud();
-  const networkPanel = new NetworkPanel([5, 8, 1]);
+  const networkPanel = new NetworkPanel([5, 8, 1], {
+    variant: 'snake',
+    outputLabels: ['FLAP'],
+    onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
+  });
 
   const notWired = (): void => {
     showMessage('Model save/load is not wired up for Flappy Bird yet.');
   };
-  const controls = setupControls({
+  const controls = createDemoSettingsPanel(settings, {
     onSaveModel: notWired,
     onLoadSavedBest: notWired,
     onLoadModelFile: notWired,
@@ -75,7 +81,16 @@ async function main(): Promise<void> {
     void evolution.readBestBirdState().then((best) => {
       renderer.setBestIndex(best.index);
       hud.update(best, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index));
+      networkPanel.draw(evolution.genomeAt(best.index), {
+        stats: [
+          ['GEN', evolution.generation],
+          ['PIPES', best.pipes],
+          ['POP LEFT', best.aliveCount],
+          ['FITNESS', best.fitness.toFixed(1)],
+          ['SCORE', best.score],
+          ['VEL Y', best.velY.toFixed(2)],
+        ],
+      });
     });
     renderer.render(evolution.pipesList.length);
     requestAnimationFrame(loop);

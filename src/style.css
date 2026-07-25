@@ -492,3 +492,8 @@ body.snake-settings-collapsed .snake-settings-resize {
 body.snake-layout .hud {
   display: none;
 }
+
+body.snake-layout .nes-panel {
+  right: calc(var(--snake-settings-width) + var(--game-padding) + 1rem);
+  top: calc(var(--top-nav-height) + var(--game-padding) + 1rem);
+}

@@ -1,5 +1,6 @@
 import '../../style.css';
-import { currentSettings, setupControls } from '../../gui/controls_gui';
+import { currentSettings } from '../../gui/controls_gui';
+import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
@@ -47,18 +48,23 @@ function createHud(): { update(best: BestAgentSnapshot, generation: number): voi
 }
 
 async function main(): Promise<void> {
+  document.body.classList.add('snake-layout');
   const gpu = await initializeWebGPU(canvas);
   const settings = currentSettings();
 
   const evolution = PacmanEvolution.init(gpu.device, settings.population);
   const renderer = await PacmanRenderer.create(canvas, gpu, evolution.buffers);
   const hud = createHud();
-  const networkPanel = new NetworkPanel([17, 12, 4]);
+  const networkPanel = new NetworkPanel([17, 12, 4], {
+    variant: 'snake',
+    outputLabels: ['UP', 'DOWN', 'LEFT', 'RIGHT'],
+    onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
+  });
 
   const notWired = (): void => {
     showMessage('Model save/load is not wired up for Pac-Man yet.');
   };
-  const controls = setupControls({
+  const controls = createDemoSettingsPanel(settings, {
     onSaveModel: notWired,
     onLoadSavedBest: notWired,
     onLoadModelFile: notWired,
@@ -78,7 +84,15 @@ async function main(): Promise<void> {
     void evolution.readBestAgentState().then((best) => {
       renderer.setBestIndex(best.index);
       hud.update(best, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index));
+      networkPanel.draw(evolution.genomeAt(best.index), {
+        stats: [
+          ['GEN', evolution.generation],
+          ['SCORE', best.score],
+          ['DOTS', best.dotsLeft],
+          ['LEVEL', best.level],
+          ['POP LEFT', best.aliveCount],
+        ],
+      });
     });
     renderer.render((now - startTime) / 1000);
     requestAnimationFrame(loop);

@@ -1,5 +1,6 @@
 import '../../style.css';
-import { currentSettings, persistMode, setupControls, updateSetting } from '../../gui/controls_gui';
+import { currentSettings, persistMode, updateSetting } from '../../gui/controls_gui';
+import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
@@ -29,6 +30,7 @@ function showError(error: unknown): void {
 }
 
 async function main(): Promise<void> {
+  document.body.classList.add('snake-layout');
   const gpu = await initializeWebGPU(canvas);
 
   // ?selftest runs the CPU/GPU parity asserts and reports to console + #message.
@@ -56,10 +58,15 @@ async function main(): Promise<void> {
 
   const renderer = new Renderer(canvas, gpu, track, evolution.simBuffers);
   const hud = new Hud();
-  const networkPanel = new NetworkPanel(TOPOLOGY);
+  const networkPanel = new NetworkPanel(TOPOLOGY, {
+    variant: 'snake',
+    outputLabels: ['TURN', 'ENGINE'],
+    onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
+  });
   let lastBest: BestCarSnapshot | null = null;
 
-  const controls = setupControls(
+  const controls = createDemoSettingsPanel(
+    settings,
     {
       onSaveModel: () => {
         if (!lastBest) return;
@@ -86,16 +93,23 @@ async function main(): Promise<void> {
     { tracks: TRACKS },
   );
 
-  renderer.onPanStart = () => controls.setFollow(false);
-
   const loop = (): void => {
     evolution.substeps(controls.speed);
     void evolution.checkAndEvolve(isTest);
     void evolution.readBestCarState().then((best) => {
       lastBest = best;
-      renderer.follow(best.x, best.y, best.index, controls.followCam);
+      renderer.follow(best.x, best.y, best.index, false);
       hud.update(best, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index));
+      networkPanel.draw(evolution.genomeAt(best.index), {
+        stats: [
+          ['GEN', evolution.generation],
+          ['FITNESS', best.fitness.toFixed(3)],
+          ['POP LEFT', best.aliveCount],
+          ['TURN', best.turn.toFixed(2)],
+          ['ENGINE', best.engine.toFixed(2)],
+          ['TRACK', track.name],
+        ],
+      });
     });
     renderer.render();
     requestAnimationFrame(loop);
