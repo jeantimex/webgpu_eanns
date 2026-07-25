@@ -91,6 +91,8 @@ export interface GuiActions {
 export interface GuiOptions {
   /** Demo's track list; when set, a track selector is shown and switching reloads with ?track=. */
   tracks?: readonly string[];
+  /** Track uses this; demos without camera follow can hide it. */
+  showFollowCam?: boolean;
 }
 
 /** lil-gui control panel; returns live, non-persisted view/sim options. */
@@ -124,7 +126,7 @@ export function setupControls(
   }
   gui.add(controls, 'population', 3, 10000, 1).name('Population (URL)').onFinishChange((val: number) => updateSetting('pop', val));
   gui.add(controls, 'speed', 1, 100, 1).name('Sim speed').onChange((val: number) => updateUrlParamLive('speed', val));
-  const followController = gui.add(controls, 'followCam').name('Follow best car');
+  const followController = options?.showFollowCam === false ? null : gui.add(controls, 'followCam').name('Follow best car');
   const buttons = {
     saveBestModel: actions.onSaveModel,
     loadModelFile: () => fileInput.click(),
@@ -136,7 +138,7 @@ export function setupControls(
   return Object.assign(controls, {
     setFollow: (v: boolean) => {
       controls.followCam = v;
-      followController.updateDisplay();
+      followController?.updateDisplay();
     },
   });
 }

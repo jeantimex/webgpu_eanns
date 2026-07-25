@@ -4,6 +4,7 @@ import {
   A,
   AGENT_FLOATS,
   createSnakeBuffers,
+  GRID,
   initialAgentStates,
   SNAKE_GENOME_SIZE,
   SNAKE_TOPOLOGY,
@@ -21,6 +22,8 @@ export interface BestSnakeSnapshot {
   life: number;
   gameOver: boolean;
   aliveCount: number;
+  vision: Float32Array;
+  decision: Float32Array;
 }
 
 /** Generation driver: each agent plays one snake game inside the compute shader. */
@@ -134,6 +137,70 @@ export class SnakeEvolution {
     return score < 10 ? lifetimeSq * 2 ** score : lifetimeSq * 1024 * (score - 9);
   }
 
+  private bodyBit(states: Float32Array<ArrayBuffer>, agentIndex: number, cell: number): boolean {
+    const u32 = new Uint32Array(states.buffer);
+    const o = agentIndex * AGENT_FLOATS;
+    return ((u32[o + A.bodyMask + (cell >>> 5)] >>> (cell & 31)) & 1) === 1;
+  }
+
+  private visionFor(states: Float32Array<ArrayBuffer>, agentIndex: number): Float32Array {
+    const o = agentIndex * AGENT_FLOATS;
+    const hx = states[o + A.headX];
+    const hy = states[o + A.headY];
+    const ax = states[o + A.appleX];
+    const ay = states[o + A.appleY];
+    const dirs = [
+      [-1, 0], [-1, -1], [0, -1], [1, -1],
+      [1, 0], [1, 1], [0, 1], [-1, 1],
+    ] as const;
+    const vision = new Float32Array(24);
+    for (let d = 0; d < dirs.length; d++) {
+      let px = hx;
+      let py = hy;
+      let dist = 0;
+      let food = 0;
+      let body = 0;
+      while (true) {
+        px += dirs[d][0];
+        py += dirs[d][1];
+        dist++;
+        if (px < 0 || px >= GRID || py < 0 || py >= GRID) break;
+        if (!food && px === ax && py === ay) food = 1;
+        if (!body && this.bodyBit(states, agentIndex, py * GRID + px)) body = 1;
+      }
+      vision[d * 3] = food;
+      vision[d * 3 + 1] = body;
+      vision[d * 3 + 2] = 1 / dist;
+    }
+    return vision;
+  }
+
+  private decisionFor(genome: Float64Array, vision: Float32Array): Float32Array {
+    let offset = 0;
+    const relu = (x: number) => Math.max(0, x);
+    const h1 = new Float64Array(16);
+    for (let h = 0; h < 16; h++) {
+      let sum = genome[offset + 24 * 16 + h];
+      for (let k = 0; k < 24; k++) sum += vision[k] * genome[offset + k * 16 + h];
+      h1[h] = relu(sum);
+    }
+    offset += 25 * 16;
+    const h2 = new Float64Array(16);
+    for (let h = 0; h < 16; h++) {
+      let sum = genome[offset + 16 * 16 + h];
+      for (let k = 0; k < 16; k++) sum += h1[k] * genome[offset + k * 16 + h];
+      h2[h] = relu(sum);
+    }
+    offset += 17 * 16;
+    const out = new Float32Array(4);
+    for (let j = 0; j < 4; j++) {
+      let sum = genome[offset + 16 * 4 + j];
+      for (let h = 0; h < 16; h++) sum += h2[h] * genome[offset + h * 4 + j];
+      out[j] = relu(sum);
+    }
+    return out;
+  }
+
   /** Dispatch k moves (turn-based: one dispatch = one move). */
   substeps(k: number): void {
     const encoder = this.device.createCommandEncoder();
@@ -222,6 +289,7 @@ export class SnakeEvolution {
     }
     const shown = this.displayIndex;
     const o = shown * AGENT_FLOATS;
+    const vision = this.visionFor(states, shown);
     return {
       index: shown,
       apples: states[o + A.apples],
@@ -231,6 +299,8 @@ export class SnakeEvolution {
       life: states[o + A.sinceEat],
       gameOver: states[o + A.gameOver] > 0.5,
       aliveCount,
+      vision,
+      decision: this.decisionFor(this.genomes[shown], vision),
     };
   }
 }
