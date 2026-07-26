@@ -44,6 +44,10 @@ struct SimParams {
   houseReleaseScale: f32,
   actionTemperature: f32, // 0 = take the mode; >0 = sample, lower is sharper
   levelTickLimit: u32, // per-board time budget, adjustable at runtime
+  ghostChaos: f32, // chance a ghost takes a random legal turn instead of the best
+  pad0: u32,
+  pad1: u32,
+  pad2: u32,
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
@@ -182,14 +186,13 @@ fn warpX(x: f32, y: f32) -> f32 {
 
 fn keepInMaze(pos: vec2f, previous: vec2f) -> vec2f {
   var p = pos;
-  if (abs(p.y - 14.0) < 0.75) {
-    p.y = 14.0;
-    p.x = warpX(p.x, p.y);
-    let c = i32(floor(p.x + 0.5));
-    if (!isGhostPathCell(c, 14)) {
-      return previous;
-    }
-    return p;
+  // Row 14 wraps end to end, but that only applies to a ghost which has actually
+  // run off one of its ends. Snapping *every* ghost near y=14 onto the row pins
+  // vertical traffic at columns 6, 9, 18 and 21 — corridors that cross the
+  // tunnel — and a pinned ghost never moves, so it stays snapped, re-decides the
+  // same direction every tick and freezes there permanently.
+  if (abs(p.y - 14.0) < 0.75 && (p.x < 0.0 || p.x > 27.0)) {
+    return vec2f(warpX(p.x, 14.0), 14.0);
   }
   p.x = clamp(p.x, 0.0, 27.0);
   p.y = clamp(p.y, 0.0, 30.0);
@@ -635,13 +638,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           }
         }
         // Candidates: open neighbors minus reverse; pick min (scared: max) dist.
+        let fromDir = gdir;
         var bestD = select(1e30, -1e30, mode == 1u);
         var bestDir = gdir;
         var count = 0u;
+        var legal = array<u32, 4>(0u, 0u, 0u, 0u);
         for (var dd = 0u; dd < 4u; dd++) {
-          if (dd == opp(gdir)) { continue; }
+          if (dd == opp(fromDir)) { continue; }
           let dv = dirVec(dd);
           if (isWallCell(gc + i32(dv.x), gr + i32(dv.y))) { continue; }
+          legal[count] = dd;
           count++;
           let candX = gx + dv.x;
           let candY = gy + dv.y;
@@ -652,8 +658,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
         if (count > 0u) {
           gdir = bestDir;
-        } else if (isWallCell(gc + i32(dirVec(gdir).x), gr + i32(dirVec(gdir).y))) {
-          gdir = opp(gdir);
+          // Arcade ghosts are wholly deterministic, so every game plays out the
+          // same way. An occasional random legal turn makes each run differ.
+          // The draw comes from the generation seed and the *episode* index, not
+          // from this agent's evolving RNG, so every genome in an episode still
+          // faces the same ghost behaviour (common random numbers).
+          if (params.ghostChaos > 0.0) {
+            let roll = nextRand(params.rngSeed ^ ((i % params.episodes) * 0x9e3779b9u) ^ (ticks * 2654435761u) ^ ((g + 1u) * 40503u));
+            if (f32(roll & 0xffffu) / 65536.0 < params.ghostChaos) {
+              gdir = legal[(roll >> 16u) % count];
+            }
+          }
+        } else if (isWallCell(gc + i32(dirVec(fromDir).x), gr + i32(dirVec(fromDir).y))) {
+          gdir = opp(fromDir);
         }
         let dv = dirVec(gdir);
         gx += dv.x * step; gy += dv.y * step;

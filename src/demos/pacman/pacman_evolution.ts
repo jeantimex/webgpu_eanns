@@ -6,6 +6,7 @@ import {
   AGENT_FLOATS,
   createPacmanBuffers,
   EPISODES_PER_GENOME,
+  GHOST_CHAOS,
   FIT_PELLET_PCT_W,
   FIT_SCORE_NORM,
   FIT_SCORE_W,
@@ -84,6 +85,8 @@ export class PacmanEvolution {
   private bestFitness = -Infinity;
   private bestScore = 0;
   private bestLevel = 1;
+  /** Highest level any agent has ever reached, for the HUD. */
+  private highestLevel = 1;
   private bestGeneration = 1;
   private readPending: Promise<Float32Array<ArrayBuffer>> | null = null;
   private isEvolving = false;
@@ -96,6 +99,7 @@ export class PacmanEvolution {
   private stagnantGenerations = 0;
   private lastBestFitness = -Infinity;
   private actionTemperature = ACTION_TEMPERATURE;
+  private ghostChaos = GHOST_CHAOS;
   private levelSeconds = LEVEL_SECS;
   private ghostSpeedScale = 1;
   private houseReleaseScale = 1;
@@ -201,6 +205,12 @@ export class PacmanEvolution {
     return this.levelSeconds;
   }
 
+  /** Chance a ghost takes a random legal turn; 0 restores pure arcade behaviour. */
+  setGhostChaos(p: number): void {
+    this.ghostChaos = Math.min(1, Math.max(0, p));
+    this.writeParams();
+  }
+
   /** Softmax temperature for training agents. 0 takes the mode (no exploration). */
   setActionTemperature(t: number): void {
     this.actionTemperature = Math.max(0, t);
@@ -208,7 +218,7 @@ export class PacmanEvolution {
   }
 
   private writeParams(): void {
-    const data = new ArrayBuffer(32);
+    const data = new ArrayBuffer(48);
     // Training agents sample from the softmax; the replay/test slot takes the
     // mode so the pacman you watch behaves deterministically.
     new Uint32Array(data).set([this.buffers.totalAgents, this.episodes, this.playMode ? 1 : 0, this.episodeSeed]);
@@ -221,6 +231,7 @@ export class PacmanEvolution {
     // the network at all, so play mode needs no special case.
     new Float32Array(data, 24).set([this.actionTemperature]);
     new Uint32Array(data, 28).set([Math.round(this.levelSeconds * 60)]);
+    new Float32Array(data, 32).set([this.ghostChaos]);
     this.device.queue.writeBuffer(this.buffers.params, 0, new Uint8Array(data));
   }
 
@@ -342,24 +353,38 @@ export class PacmanEvolution {
           survivalPct * FIT_SURVIVAL_W +
           pelletPct * FIT_PELLET_PCT_W -
           wastedPct * FIT_WASTED_W;
-        this.bestLevel = Math.max(this.bestLevel, level);
+        this.highestLevel = Math.max(this.highestLevel, level);
       }
 
       const fitnesses = aggregateEpisodes(episodeScores, this.populationSize, this.episodes);
       this.lastSpread = episodeSpread(episodeScores, this.populationSize, this.episodes).meanRange;
 
-      // The recorded best is now the best *aggregate*, not the luckiest single
-      // run, so an exported model replays close to the score it was saved with.
+      // Which genome gets saved is ranked by the level it *typically* reaches
+      // first, and only then by fitness.
+      //
+      // Composite fitness alone nearly ties the two cases we care most about
+      // separating: a genome that has just cleared a board sits at pelletPct
+      // 100 with an empty new board, and one that ate 243 pellets and died sits
+      // at 99.6. Sorting on level first makes the board-clearer win outright,
+      // which is what "save the best model" should mean. Levels are coarse and
+      // most genomes never clear one, so in practice this is a tie-break that
+      // only fires where it matters.
+      //
+      // Selection inside the GA is untouched and still uses the composite: a
+      // sparse integer would be a poor gradient to evolve against.
       for (let g = 0; g < this.populationSize; g++) {
-        if (fitnesses[g] <= this.bestFitness) continue;
-        this.bestFitness = fitnesses[g];
-        // Report the median episode of that genome rather than its best, so the
-        // headline score is one it can actually reproduce.
+        // Median episode, so the recorded figures are ones it can reproduce.
         const runs = Array.from({ length: this.episodes }, (_, e) => g * this.episodes + e)
           .sort((a, b) => episodeScores[a] - episodeScores[b]);
         const typical = runs[runs.length >> 1] * AGENT_FLOATS;
+        const typicalLevel = states[typical + A.level];
+        const better =
+          typicalLevel > this.bestLevel ||
+          (typicalLevel === this.bestLevel && fitnesses[g] > this.bestFitness);
+        if (!better) continue;
+        this.bestFitness = fitnesses[g];
         this.bestScore = states[typical + A.score];
-        this.bestLevel = states[typical + A.level];
+        this.bestLevel = typicalLevel;
         this.bestGeneration = this.generation;
         this.bestGenome = new Float64Array(this.genomes[g]);
         this.genomes[this.displayGenomeIndex].set(this.bestGenome);
@@ -459,7 +484,7 @@ export class PacmanEvolution {
       aliveCount,
       bestScore: this.bestScore,
       bestGeneration: this.bestGeneration,
-      bestLevel: this.bestLevel,
+      bestLevel: this.highestLevel,
     };
   }
 }

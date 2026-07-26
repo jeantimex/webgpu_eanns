@@ -146,6 +146,15 @@ export const MAX_GAME_TICKS = 21600; // 6 min at 60 Hz, then the game ends
 export const LEVEL_SECS = 90; // default per-board time budget; adjustable at runtime
 export const LEVEL_SECS_MIN = 30;
 export const LEVEL_SECS_MAX = 180;
+
+/**
+ * Chance that a ghost takes a random legal turn instead of its best one. The
+ * arcade AI is fully deterministic, so without this every game is the same
+ * replay. Small enough to keep the authentic feel, large enough that the same
+ * genome meets different situations run to run.
+ */
+export const GHOST_CHAOS = 0.1;
+
 /**
  * Episodes each genome is scored over; see src/utils/evaluation.ts. Measured at
  * generation 40, population 300: 1 episode gives 54.6 average pellets, 3 gives
@@ -214,11 +223,12 @@ export function createPacmanBuffers(device: GPUDevice, populationSize: number, e
   const totalAgents = populationSize * episodes + 1;
   // SimParams uniform: agentCount, episodes, playMode, rngSeed (u32) then the
   // per-generation environment jitter of §5.1 as two f32; padded to 32 bytes.
-  const paramsData = new ArrayBuffer(32);
+  const paramsData = new ArrayBuffer(48);
   new Uint32Array(paramsData).set([totalAgents, episodes]);
   new Float32Array(paramsData, 16).set([1, 1]);
   new Float32Array(paramsData, 24).set([1]);
   new Uint32Array(paramsData, 28).set([LEVEL_SECS * 60]);
+  new Float32Array(paramsData, 32).set([GHOST_CHAOS]);
 
   // One genome per individual plus the display slot — episodes share a genome.
   const genomes = device.createBuffer({
