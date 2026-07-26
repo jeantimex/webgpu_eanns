@@ -21,7 +21,6 @@ import {
   A,
   AGENT_FLOATS,
   FRIGHT_SECS,
-  LEVEL_SECS,
   MAX_GAME_TICKS,
   PACMAN_GENOME_SIZE,
   PACMAN_HIDDEN,
@@ -43,8 +42,8 @@ struct SimParams {
   // rather than overfit one fixed ghost timing.
   ghostSpeedScale: f32,
   houseReleaseScale: f32,
-  sampleActions: u32,
-  pad0: u32,
+  actionTemperature: f32, // 0 = take the mode; >0 = sample, lower is sharper
+  levelTickLimit: u32, // per-board time budget, adjustable at runtime
 };
 
 @group(0) @binding(0) var<uniform> params: SimParams;
@@ -85,7 +84,6 @@ const HIDDEN = ${PACMAN_HIDDEN}u;
 const DT = 0.016666667; // 1/60
 const PAC_SPEED = ${PAC_SPEED}.0;
 const MAX_TICKS = ${MAX_GAME_TICKS}u;
-const LEVEL_TICK_LIMIT = ${LEVEL_SECS * 60}u;
 const STALL_SECS = ${STALL_SECS}.0;
 
 // Maze graph (built once on the CPU, see mazeGraph in maze.ts).
@@ -261,7 +259,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
   let levelTicks = u32(agents[b + A_LEVEL_TICKS]) + 1u;
   agents[b + A_LEVEL_TICKS] = f32(levelTicks);
-  if (!isPlayer && levelTicks > LEVEL_TICK_LIMIT) {
+  if (!isPlayer && levelTicks > params.levelTickLimit) {
     agents[b + A_OVER] = 1.0;
     return;
   }
@@ -390,15 +388,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
       }
 
-      var inputs: array<f32, 8>;
+      // Directions as unit vectors: "head that way" is then a linear map onto
+      // the four outputs, instead of four bumps on one ordinal axis.
+      let pelletVec = select(vec2f(0.0), dirVec(argminDir(&pelletNear)), pelletCur < UNREACHABLE);
+      let ghostVec = select(vec2f(0.0), dirVec(argminDir(&ghostNear)), ghostCur < UNREACHABLE);
+      let powerVec = select(vec2f(0.0), dirVec(argminDir(&powerNear)), powerCur < UNREACHABLE);
+
+      var inputs: array<f32, INPUTS>;
       inputs[0] = min(pelletCur, DIAMETER) / DIAMETER;
-      inputs[1] = f32(argminDir(&pelletNear)) / 3.0;
-      inputs[2] = min(ghostCur, DIAMETER) / DIAMETER;
-      inputs[3] = f32(argminDir(&ghostNear)) / 3.0;
-      inputs[4] = ghostState;
-      inputs[5] = select(f32(argminDir(&powerNear) + 1u) / 4.0, 0.0, powerCur >= UNREACHABLE);
-      inputs[6] = select(0.0, 1.0, !wallAhead(px, py, pdir, step));
-      inputs[7] = (244.0 - agents[b + A_DOTS]) / 244.0;
+      inputs[1] = pelletVec.x;
+      inputs[2] = pelletVec.y;
+      inputs[3] = min(ghostCur, DIAMETER) / DIAMETER;
+      inputs[4] = ghostVec.x;
+      inputs[5] = ghostVec.y;
+      inputs[6] = ghostState;
+      inputs[7] = powerVec.x;
+      inputs[8] = powerVec.y;
+      inputs[9] = select(0.0, 1.0, !wallAhead(px, py, pdir, step));
+      inputs[10] = (244.0 - agents[b + A_DOTS]) / 244.0;
 
       // Forward pass [8 -> 6 ReLU -> 4], then softmax, then sample.
       let gBase = i * GENOME_SIZE;
@@ -421,22 +428,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         logits[m] = sum;
         maxLogit = max(maxLogit, sum);
       }
-      var total = 0.0;
-      var probs: array<f32, 4>;
-      for (var m = 0u; m < 4u; m++) {
-        probs[m] = exp(clamp(logits[m] - maxLogit, -30.0, 0.0));
-        total += probs[m];
-      }
-      // Sampling, not argmax: 引入随机性有助于探索 (§2.2). The replay/test agent
-      // takes the mode instead so the shown behaviour is stable.
+      // Sampling, not argmax: 引入随机性有助于探索 (§2.2). Temperature sets how
+      // much: the raw logit scale is bounded by the weight range, so without it
+      // the policy is stuck near-uniform and wanders regardless of what it wants.
+      // The replay/test agent always takes the mode so what you watch is stable.
       var rngState = nextRand(bitcast<u32>(agents[b + A_RNG]));
       agents[b + A_RNG] = bitcast<f32>(rngState);
-      if (params.sampleActions == 0u || i >= params.trainCount) {
-        var bestP = -1.0;
+      if (params.actionTemperature <= 0.0 || i >= params.trainCount) {
+        var bestLogit = -1e30;
         for (var m = 0u; m < 4u; m++) {
-          if (probs[m] > bestP) { bestP = probs[m]; desired = m; }
+          if (logits[m] > bestLogit) { bestLogit = logits[m]; desired = m; }
         }
       } else {
+        var total = 0.0;
+        var probs: array<f32, 4>;
+        for (var m = 0u; m < 4u; m++) {
+          probs[m] = exp(clamp((logits[m] - maxLogit) / params.actionTemperature, -30.0, 0.0));
+          total += probs[m];
+        }
         var roll = f32(rngState & 0x00ffffffu) / 16777216.0 * total;
         desired = 3u;
         for (var m = 0u; m < 4u; m++) {

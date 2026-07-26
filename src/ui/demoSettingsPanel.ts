@@ -13,6 +13,18 @@ export interface DemoSettingsToggle {
   onChange: (enabled: boolean) => void;
 }
 
+/** A numeric range a demo adds for itself, rendered like the Sim speed slider. */
+export interface DemoSettingsSlider {
+  label: string;
+  min: number;
+  max: number;
+  step?: number;
+  initial: number;
+  /** Suffix shown after the value, e.g. 's'. */
+  unit?: string;
+  onChange: (value: number) => void;
+}
+
 export interface DemoSettingsOptions {
   tracks?: readonly string[];
   showFps?: boolean;
@@ -20,6 +32,8 @@ export interface DemoSettingsOptions {
   onFpsChange?: (visible: boolean) => void;
   /** Demo-specific switches, rendered under the shared fields. */
   toggles?: readonly DemoSettingsToggle[];
+  /** Demo-specific numeric ranges, rendered under the shared fields. */
+  sliders?: readonly DemoSettingsSlider[];
 }
 
 export interface DemoSettingsControls {
@@ -161,6 +175,27 @@ export function createDemoSettingsPanel(
     const fpsField = field('Show FPS', showFps);
     fpsField.classList.add('snake-settings-check');
     fields.push(fpsField);
+  }
+
+  for (const slider of options.sliders ?? []) {
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(slider.min);
+    range.max = String(slider.max);
+    range.step = String(slider.step ?? 1);
+    range.value = String(slider.initial);
+    const readout = document.createElement('output');
+    readout.textContent = `${slider.initial}${slider.unit ?? ''}`;
+    range.addEventListener('input', () => {
+      const value = Number(range.value);
+      readout.textContent = `${value}${slider.unit ?? ''}`;
+      slider.onChange(value);
+    });
+    const wrap = document.createElement('div');
+    wrap.className = 'snake-settings-range';
+    wrap.append(range, readout);
+    fields.push(field(slider.label, wrap));
+    slider.onChange(slider.initial);
   }
 
   for (const toggle of options.toggles ?? []) {

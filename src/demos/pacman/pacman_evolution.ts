@@ -11,6 +11,8 @@ import {
   FIT_WASTED_W,
   initialAgentStates,
   LEVEL_SECS,
+  LEVEL_SECS_MAX,
+  LEVEL_SECS_MIN,
   PACMAN_GENOME_SIZE,
   PACMAN_TOPOLOGY,
   type PacmanBuffers,
@@ -31,6 +33,12 @@ const BASE_MUTATE_RATE = 0.05;
 const STAGNATION_LIMIT = 5;
 const MUTATE_STEP = 0.02;
 const MAX_MUTATE_RATE = 0.12;
+/** Half the mutations reset (explore), half drift (let confident weights grow). */
+const RESET_SHARE = 0.5;
+const DRIFT_SIGMA = 0.5;
+const WEIGHT_CLAMP = 8;
+/** Softmax temperature for training agents; lower = more decisive, less exploration. */
+const ACTION_TEMPERATURE = 1;
 
 /** Generation 1 is pure noise — 完全随机, as the writeup's §3.2 starts. */
 function randomNetwork(rng: Rng): Float64Array {
@@ -80,6 +88,8 @@ export class PacmanEvolution {
   private mutateRate = BASE_MUTATE_RATE;
   private stagnantGenerations = 0;
   private lastBestFitness = -Infinity;
+  private actionTemperature = ACTION_TEMPERATURE;
+  private levelSeconds = LEVEL_SECS;
   private ghostSpeedScale = 1;
   private houseReleaseScale = 1;
 
@@ -163,13 +173,33 @@ export class PacmanEvolution {
     this.writeParams();
   }
 
+  /**
+   * Per-board time budget, live. Agents already past the new limit end on the
+   * next tick, so lowering it mid-generation culls the dawdlers immediately.
+   */
+  setLevelSeconds(seconds: number): void {
+    this.levelSeconds = Math.min(LEVEL_SECS_MAX, Math.max(LEVEL_SECS_MIN, seconds));
+    this.writeParams();
+  }
+
+  levelSecondsValue(): number {
+    return this.levelSeconds;
+  }
+
+  /** Softmax temperature for training agents. 0 takes the mode (no exploration). */
+  setActionTemperature(t: number): void {
+    this.actionTemperature = Math.max(0, t);
+    this.writeParams();
+  }
+
   private writeParams(): void {
     const data = new ArrayBuffer(32);
     // Training agents sample from the softmax; the replay/test slot takes the
     // mode so the pacman you watch behaves deterministically.
     new Uint32Array(data).set([this.buffers.totalAgents, this.populationSize, this.playMode ? 1 : 0, this.episodeSeed]);
     new Float32Array(data, 16).set([this.ghostSpeedScale, this.houseReleaseScale]);
-    new Uint32Array(data, 24).set([this.playMode || this.populationSize === 1 ? 0 : 1, 0]);
+    new Float32Array(data, 24).set([this.playMode || this.populationSize === 1 ? 0 : this.actionTemperature]);
+    new Uint32Array(data, 28).set([Math.round(this.levelSeconds * 60)]);
     this.device.queue.writeBuffer(this.buffers.params, 0, new Uint8Array(data));
   }
 
@@ -269,7 +299,7 @@ export class PacmanEvolution {
         // All four terms on a 0-100 scale, so the writeup's 1 : 0.1 : 2 ratios
         // carry their intended meaning rather than being swamped by raw score.
         const scorePct = (score / FIT_SCORE_NORM) * 100;
-        const survivalPct = (ticks / (LEVEL_SECS * 60)) * 100;
+        const survivalPct = (ticks / (this.levelSeconds * 60)) * 100;
         const pelletPct = ((levelsCleared * 244 + (244 - states[o + A.dotsLeft])) / 244) * 100;
         const wastedPct = (states[o + A.wasted] / Math.max(1, ticks)) * 100;
         // No clamp to a positive floor: tournament selection only ever compares
@@ -318,6 +348,9 @@ export class PacmanEvolution {
         crossoverRate: CROSSOVER_RATE,
         mutateRate: this.mutateRate,
         mutateRange: INIT_RANGE,
+        resetShare: RESET_SHARE,
+        driftSigma: DRIFT_SIGMA,
+        clamp: WEIGHT_CLAMP,
       });
       this.genomes = [...next, new Float64Array(this.bestGenome)];
       this.generation++;
@@ -376,7 +409,7 @@ export class PacmanEvolution {
       lives: states[o + A.lives],
       dotsLeft: states[o + A.dotsLeft],
       level: states[o + A.level],
-      levelTimeLeft: Math.max(0, LEVEL_SECS - states[o + A.levelTicks] / 60),
+      levelTimeLeft: Math.max(0, this.levelSeconds - states[o + A.levelTicks] / 60),
       gameOver: states[o + A.gameOver] > 0.5,
       aliveCount,
       bestScore: this.bestScore,

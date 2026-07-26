@@ -7,7 +7,7 @@ import { mazeGraph, mazeWallBits, pelletMaskInit, pelletTiles } from './maze';
  * distribution by softmax and then *sampled* rather than argmax'd — the
  * randomness is what keeps the population exploring.
  */
-export const PACMAN_INPUTS = 8;
+export const PACMAN_INPUTS = 11;
 export const PACMAN_HIDDEN = 6;
 export const PACMAN_OUTPUTS = 4;
 export const PACMAN_TOPOLOGY = [PACMAN_INPUTS, PACMAN_HIDDEN, PACMAN_OUTPUTS] as const;
@@ -26,22 +26,34 @@ export const PACMAN_GENOME_SIZE = (PACMAN_INPUTS + 1) * PACMAN_HIDDEN + (PACMAN_
  * greedy pac oscillate between two tiles, and it is the same limitation the
  * writeup itself runs into in §4.4 (全局策略缺失).
  *
- *   0 pelletDist   maze steps to the nearest pellet / maze diameter
- *   1 pelletDir    which neighbour starts that shortest path, as dirIndex/3
- *   2 ghostDist    maze steps to the nearest ghost / maze diameter
- *   3 ghostDir     which neighbour starts that shortest path, as dirIndex/3
- *   4 ghostState   0 = hunting pacman, 1 = frightened and edible
- *   5 powerDir     0 = none left, else (dirIndex+1)/4 toward the nearest one
- *   6 aheadClear   1 when the tile in front of the current heading is open
- *   7 progress     pellets eaten on this board / 244
+ * Directions are unit vectors, not the writeup's direction *index*. An index is
+ * a categorical variable flattened onto one ordinal axis (up=0, down=.33,
+ * left=.67, right=1), so following it requires the hidden layer to build four
+ * separate bump functions on that axis — roughly 8 ReLUs' worth of structure,
+ * found by random search, with only 6 units available. As a vector the same
+ * behaviour is a plain linear map (out_up = -dy, out_right = +dx), which
+ * evolution finds almost immediately. This is §5.2's 改进感知向量 advice;
+ * 11 dims still sits inside the writeup's 8-12 ideal band.
+ *
+ *    0 pelletDist   maze steps to the nearest pellet / maze diameter
+ *  1-2 pelletDir    unit vector of the neighbour starting that shortest path
+ *    3 ghostDist    maze steps to the nearest ghost / maze diameter
+ *  4-5 ghostDir     unit vector of the neighbour starting that shortest path
+ *    6 ghostState   0 = hunting pacman, 1 = frightened and edible
+ *  7-8 powerDir     unit vector toward the nearest power pellet, (0,0) if none
+ *    9 aheadClear   1 when the tile in front of the current heading is open
+ *   10 progress     pellets eaten on this board / 244
  */
 export const PACMAN_INPUT_LABELS = [
   'PELLET d',
-  'PELLET dir',
+  'PELLET dx',
+  'PELLET dy',
   'GHOST d',
-  'GHOST dir',
+  'GHOST dx',
+  'GHOST dy',
   'GHOST state',
-  'POWER dir',
+  'POWER dx',
+  'POWER dy',
   'AHEAD clear',
   'PROGRESS',
 ] as const;
@@ -119,7 +131,9 @@ export const FRIGHT_SECS = 6; // level-1 frightened duration
 export const HOUSE_RELEASE_SECS = 8; // chained, level 1
 export const START_LIVES = 0; // spare lives: 1 attempt per thread, first hit ends the game
 export const MAX_GAME_TICKS = 21600; // 6 min at 60 Hz, then the game ends
-export const LEVEL_SECS = 90; // per-board time budget; running it out ends the game
+export const LEVEL_SECS = 90; // default per-board time budget; adjustable at runtime
+export const LEVEL_SECS_MIN = 30;
+export const LEVEL_SECS_MAX = 180;
 export const STALL_SECS = 8; // no pellet for this long ends the game (anti standstill)
 export const FRUIT_SECS = 10; // cherry lifetime, spawns at 70 and 170 dots eaten (100 pts)
 
@@ -174,6 +188,8 @@ export function createPacmanBuffers(device: GPUDevice, populationSize: number): 
   const paramsData = new ArrayBuffer(32);
   new Uint32Array(paramsData).set([totalAgents, populationSize]);
   new Float32Array(paramsData, 16).set([1, 1]);
+  new Float32Array(paramsData, 24).set([1]);
+  new Uint32Array(paramsData, 28).set([LEVEL_SECS * 60]);
 
   const genomes = device.createBuffer({
     label: 'pacman genomes',

@@ -1,10 +1,10 @@
 import '../../style.css';
-import { currentSettings, persistMode, updateSetting } from '../../gui/controls_gui';
+import { currentSettings, persistMode, updateSetting, updateUrlParamLive } from '../../gui/controls_gui';
 import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
-import { PACMAN_OUTPUT_LABELS } from './pacman_buffers';
+import { LEVEL_SECS, LEVEL_SECS_MAX, LEVEL_SECS_MIN, PACMAN_OUTPUT_LABELS } from './pacman_buffers';
 import { PacmanEvolution, type BestAgentSnapshot } from './pacman_evolution';
 import { loadPacmanModelFile, loadPacmanTestModel, loadSavedPacmanBest, savePacmanModel, savePacmanTestModel } from './pacman_model';
 import { PacmanRenderer } from './pacman_renderer';
@@ -72,6 +72,11 @@ async function main(): Promise<void> {
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
   });
 
+  const rawLevelSecs = Number(new URLSearchParams(window.location.search).get('level'));
+  const initialLevelSecs = Number.isFinite(rawLevelSecs) && rawLevelSecs > 0
+    ? Math.min(LEVEL_SECS_MAX, Math.max(LEVEL_SECS_MIN, Math.round(rawLevelSecs)))
+    : LEVEL_SECS;
+
   const isPlayMode = settings.mode === 'Play';
   evolution.setPlayMode(isPlayMode);
   // Play mode starts frozen at the initial position; the first arrow key starts the game.
@@ -129,6 +134,20 @@ async function main(): Promise<void> {
       }
     },
   }, {
+    sliders: [
+      {
+        label: 'Level time',
+        min: LEVEL_SECS_MIN,
+        max: LEVEL_SECS_MAX,
+        step: 5,
+        initial: initialLevelSecs,
+        unit: 's',
+        onChange: (value: number) => {
+          evolution.setLevelSeconds(value);
+          updateUrlParamLive('level', value);
+        },
+      },
+    ],
     // Debug overlays for the perception vector the network actually sees.
     toggles: [
       { label: 'Pellet BFS path', onChange: (on: boolean) => renderer.setShowPelletPath(on) },

@@ -141,6 +141,18 @@ export interface TournamentOptions {
   mutateRate?: number;
   /** Half-width of the range a mutated weight is reset into (default 1). */
   mutateRange?: number;
+  /**
+   * Share of mutations that are resets; the rest are gaussian drifts (default 1,
+   * i.e. resets only). Reset-only mutation can never produce a weight outside
+   * +/-mutateRange, because crossover merely copies values that already exist —
+   * so the reachable weight space is a sealed box and a softmax policy built on
+   * it can never grow confident. Mixing in drift lets magnitudes escape.
+   */
+  resetShare?: number;
+  /** Gaussian sigma for drift mutations (default 0.5). */
+  driftSigma?: number;
+  /** Magnitude ceiling applied after drift (default 8). */
+  clamp?: number;
 }
 
 /** Best of `k` random draws. Stronger pressure than roulette, and indifferent to fitness scale. */
@@ -169,7 +181,16 @@ export function nextTournamentGeneration(
   rng: Rng,
   options: TournamentOptions = {},
 ): Float64Array[] {
-  const { tournamentSize = 3, eliteFraction = 0.02, crossoverRate = 0.8, mutateRate = 0.05, mutateRange = 1 } = options;
+  const {
+    tournamentSize = 3,
+    eliteFraction = 0.02,
+    crossoverRate = 0.8,
+    mutateRate = 0.05,
+    mutateRange = 1,
+    resetShare = 1,
+    driftSigma = 0.5,
+    clamp = 8,
+  } = options;
   const n = population.length;
   const genomeSize = population[0].length;
 
@@ -183,7 +204,12 @@ export function nextTournamentGeneration(
       for (let k = cut; k < genomeSize; k++) child[k] = other[k];
     }
     for (let k = 0; k < genomeSize; k++) {
-      if (rng() < mutateRate) child[k] = (rng() * 2 - 1) * mutateRange;
+      if (rng() >= mutateRate) continue;
+      if (rng() < resetShare) {
+        child[k] = (rng() * 2 - 1) * mutateRange;
+      } else {
+        child[k] = Math.max(-clamp, Math.min(clamp, child[k] + gaussian(rng) * driftSigma));
+      }
     }
     return child;
   });
