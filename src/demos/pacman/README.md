@@ -28,6 +28,7 @@ algorithms, with two deliberate departures that are documented and measured belo
 14. [Files](#14-files)
 15. [Verifying changes headlessly](#15-verifying-changes-headlessly)
 16. [Known limits and next steps](#16-known-limits-and-next-steps)
+17. [Improvement backlog](#17-improvement-backlog)
 
 ---
 
@@ -588,10 +589,8 @@ resets agent state for the next generation, so reading after it yields all zeros
 **Fitness is a single sampled episode.** With stochastic actions, the same genome
 scores very differently run to run — `best` swings between 242 and 459 across
 adjacent generations, and a saved best replays with a 4× spread (§13). Tournament
-selection on a noisy signal selects partly on luck. Averaging 2-3 episodes per
-genome and selecting on the mean is the highest-value next change: it would make
-the saved best genuinely the best rather than the luckiest, and make the exported
-model's recorded score match what you actually see on replay.
+selection on a noisy signal selects partly on luck, and it is why a saved best
+replays worse than its recorded score. Fixing it is item 0 of §17.
 
 **One life.** `START_LIVES = 0` ends the run at first contact, around 21 s in, so
 agents rarely see a late board and get little gradient toward *finishing* one.
@@ -603,6 +602,64 @@ near-random walk it was before.
 
 **The writeup's own ceiling applies here too** (§4.4): a purely reactive policy over
 instantaneous perception has no long-range planning. It will not cross a patrolled
-corridor to reach a distant power pellet. Breaking that needs either memory (feeding
-the previous action or perception back in, §5.2) or a different learning method
-entirely.
+corridor to reach a distant power pellet. Breaking that needs either memory (§17,
+item 2) or a different learning method entirely.
+
+---
+
+## 17. Improvement backlog
+
+Everything the writeup recommends that is **not** yet implemented, audited against
+the code and ordered by expected value *for this codebase* rather than by the order
+the writeup presents them. Section references are to the writeup.
+
+Already covered, for contrast: §2.1 perception vector, §2.2 shallow net + softmax +
+sampling, §2.3 step cap, §3.1 composite fitness, §3.2 tournament k=3, §3.3
+crossover/mutation/adaptive rate, §3.4 elitism 2%, §5.1 population size, §5.1 ghost
+behaviour jitter, §6.3 visualisation.
+
+### Item 0 — not in the writeup, but our largest measured problem
+
+**Average fitness over several episodes.** Fitness is currently a single sampled
+episode. Replaying one identical genome ten times gives 44 to 179 pellets — a **4×
+spread** (§13). Tournament selection on that is partly selecting luck, and it is why
+the autosaved "best" is the luckiest run rather than the best policy.
+
+Scoring each genome over 2–3 episodes and selecting on the mean would improve
+selection quality *and* make exported models honest about their own scores. The
+writeup never discusses evaluation variance — it samples actions too, but only
+reports end-state behaviour — so this is ours to fix. **I would do this first.**
+
+Note that it rescales fitness without changing topology, which is exactly the case
+the `comparable` guard in §13 exists to survive.
+
+### Tier 1 — aimed at the stall deaths that dominate our failure mode
+
+| # | Item | Writeup | Why it matters here | Effort |
+|---|---|---|---|---|
+| 1 | **Dead-end / corridor feature** | §5.2 | We *had* this as `escapeRoutes` and dropped it in the rewrite to match the writeup's 8-input list. Measured routing cost: **zero** (335 vs 333 tiles to clear a board). Stall is ~60% of deaths and walking into a sealable dead end is a direct cause. Cheapest real win available. | Low |
+| 2 | **Memory input** | §5.2 | Feed the previous action or previous perception back in. The writeup's rationale is sensing whether a ghost is *approaching or receding*; equally valuable here, it gives a stateless, loop-prone policy some sense of where it came from. | Low–Med |
+| 3 | **Average of the nearest *three* pellets** | §5.2 | Smooths the pellet signal. The agent currently chases a single nearest pellet and dithers when two are equidistant. | Low |
+
+### Tier 2 — the plateau and population diversity
+
+| # | Item | Writeup | Notes | Effort |
+|---|---|---|---|---|
+| 4 | **Speciation / niching** | §5.1 | Group genomes by Euclidean distance in weight space, select within species, guarantee each species some offspring. Protects strategies that are novel but not yet competitive. The writeup names diversity loss as *the* reason evolution stops (§6.2), and our adaptive mutation rate pinning at its 12% cap is precisely that signature. | Med — needs a distance metric and grouping in the shared GA |
+| 5 | **Selection-pressure schedule** | §5.3 | Large tournament k early to purge junk fast, smaller k late to preserve diversity. Ours is fixed at 3. | Very low |
+| 6 | **Map variation** | §5.1, §4.4 | We jitter ghost speed and house release but never the layout, so we carry the writeup's exact overfitting risk: weights tuned to one geometry. Expensive here — every map needs its own 90 KB BFS table and pellet indexing. | High |
+| 7 | **Memetic / local search on elites** | §5.3 | Hill-climb the top few genomes a few steps per generation (Lamarckian). GAs are weak at fine optimisation and we are plateaued rather than diverging, which is what this targets. | Med |
+
+### Tier 3 — capacity and tooling
+
+| # | Item | Writeup | Notes | Effort |
+|---|---|---|---|---|
+| 8 | **Larger network** | §5.2 | A second hidden layer, or more units. Genuinely uncertain value: the vector-encoding result (§4) suggested our bottleneck was *representation*, not capacity, and a bigger genome enlarges a search space the GA can only cover by random variation. Try only after Tier 1. | Low to try |
+| 9 | **Per-generation genome archive** | §6.3 | We keep only the all-time best. The writeup suggests archiving each generation's best so you can replay generation 20 against generation 120 — strong for a demo whose subject *is* evolution. | Low |
+| 10 | **Curriculum: start simple** | §6.4 | Fixed ghost patterns, then a simple map, then scale up. We jumped straight to the full arcade maze with four authentic ghosts and one life. Sound advice that conflicts with this project's arcade-faithful goal. | High |
+
+### Suggested order
+
+**Item 0 → 1 → 2 → 5.** The first three all target the stall deaths that dominate
+our failure mode; item 5 is nearly free. Re-measure after each — every confident
+prediction in §10 was wrong, and each was settled by a two-minute headless A/B.
