@@ -368,10 +368,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
       }
 
-      // Nearest ghost, plus whether that particular ghost is edible right now.
+      // The two nearest on-board ghosts. Reporting only the closest one leaves
+      // the agent blind to a pincer, so it flees one ghost into the other.
       var ghostCur = UNREACHABLE;
+      var ghostTile = -1;
       var ghostState = 0.0;
-      var ghostNear = array<f32, 4>(UNREACHABLE, UNREACHABLE, UNREACHABLE, UNREACHABLE);
+      var ghost2Cur = UNREACHABLE;
+      var ghost2Tile = -1;
       for (var g = 0u; g < 4u; g++) {
         let gb = gbase + g * 4u;
         let gmode = agents[gb + 3u];
@@ -379,19 +382,31 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let gt = walkIndex(i32(round(agents[gb])), i32(round(agents[gb + 1u])));
         let dHere = pathSteps(curTile, gt);
         if (dHere < ghostCur) {
+          ghost2Cur = ghostCur;
+          ghost2Tile = ghostTile;
           ghostCur = dHere;
+          ghostTile = gt;
           ghostState = select(0.0, 1.0, gmode == 1.0);
+        } else if (dHere < ghost2Cur) {
+          ghost2Cur = dHere;
+          ghost2Tile = gt;
         }
-        for (var d = 0u; d < 4u; d++) {
-          if (candTile[d] < 0) { continue; }
-          ghostNear[d] = min(ghostNear[d], pathSteps(candTile[d], gt));
-        }
+      }
+      // Per-direction distance to each of those two specifically, so the
+      // direction inputs point at a known ghost rather than a mixture.
+      var ghostNear = array<f32, 4>(UNREACHABLE, UNREACHABLE, UNREACHABLE, UNREACHABLE);
+      var ghost2Near = array<f32, 4>(UNREACHABLE, UNREACHABLE, UNREACHABLE, UNREACHABLE);
+      for (var d = 0u; d < 4u; d++) {
+        if (candTile[d] < 0) { continue; }
+        ghostNear[d] = pathSteps(candTile[d], ghostTile);
+        ghost2Near[d] = pathSteps(candTile[d], ghost2Tile);
       }
 
       // Directions as unit vectors: "head that way" is then a linear map onto
       // the four outputs, instead of four bumps on one ordinal axis.
       let pelletVec = select(vec2f(0.0), dirVec(argminDir(&pelletNear)), pelletCur < UNREACHABLE);
       let ghostVec = select(vec2f(0.0), dirVec(argminDir(&ghostNear)), ghostCur < UNREACHABLE);
+      let ghost2Vec = select(vec2f(0.0), dirVec(argminDir(&ghost2Near)), ghost2Cur < UNREACHABLE);
       let powerVec = select(vec2f(0.0), dirVec(argminDir(&powerNear)), powerCur < UNREACHABLE);
 
       var inputs: array<f32, INPUTS>;
@@ -402,10 +417,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       inputs[4] = ghostVec.x;
       inputs[5] = ghostVec.y;
       inputs[6] = ghostState;
-      inputs[7] = powerVec.x;
-      inputs[8] = powerVec.y;
-      inputs[9] = select(0.0, 1.0, !wallAhead(px, py, pdir, step));
-      inputs[10] = (244.0 - agents[b + A_DOTS]) / 244.0;
+      inputs[7] = min(ghost2Cur, DIAMETER) / DIAMETER;
+      inputs[8] = ghost2Vec.x;
+      inputs[9] = ghost2Vec.y;
+      inputs[10] = powerVec.x;
+      inputs[11] = powerVec.y;
+      inputs[12] = select(0.0, 1.0, !wallAhead(px, py, pdir, step));
+      inputs[13] = (244.0 - agents[b + A_DOTS]) / 244.0;
 
       // Forward pass [8 -> 6 ReLU -> 4], then softmax, then sample.
       let gBase = (i / params.episodes) * GENOME_SIZE;

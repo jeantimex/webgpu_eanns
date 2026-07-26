@@ -8,7 +8,7 @@ import { mazeGraph, mazeWallBits, pelletMaskInit, pelletTiles } from './maze';
  * distribution by softmax and then *sampled* rather than argmax'd — the
  * randomness is what keeps the population exploring.
  */
-export const PACMAN_INPUTS = 11;
+export const PACMAN_INPUTS = 14;
 export const PACMAN_HIDDEN = 6;
 export const PACMAN_OUTPUTS = 4;
 export const PACMAN_TOPOLOGY = [PACMAN_INPUTS, PACMAN_HIDDEN, PACMAN_OUTPUTS] as const;
@@ -36,14 +36,22 @@ export const PACMAN_GENOME_SIZE = (PACMAN_INPUTS + 1) * PACMAN_HIDDEN + (PACMAN_
  * evolution finds almost immediately. This is §5.2's 改进感知向量 advice;
  * 11 dims still sits inside the writeup's 8-12 ideal band.
  *
- *    0 pelletDist   maze steps to the nearest pellet / maze diameter
- *  1-2 pelletDir    unit vector of the neighbour starting that shortest path
- *    3 ghostDist    maze steps to the nearest ghost / maze diameter
- *  4-5 ghostDir     unit vector of the neighbour starting that shortest path
- *    6 ghostState   0 = hunting pacman, 1 = frightened and edible
- *  7-8 powerDir     unit vector toward the nearest power pellet, (0,0) if none
- *    9 aheadClear   1 when the tile in front of the current heading is open
- *   10 progress     pellets eaten on this board / 244
+ * The *two* nearest ghosts are reported, not one. With a single ghost visible an
+ * agent cannot perceive a pincer — two ghosts closing from opposite ends of a
+ * corridor — so it flees the one it can see straight into the one it cannot.
+ * That is the classic way Pac-Man dies, and ghosts became the leading cause of
+ * death (53%) once the population grew bold enough to eat near them.
+ *
+ *     0 pelletDist   maze steps to the nearest pellet / maze diameter
+ *   1-2 pelletDir    unit vector of the neighbour starting that shortest path
+ *     3 ghostDist    maze steps to the nearest ghost / maze diameter
+ *   4-5 ghostDir     unit vector of the neighbour starting that shortest path
+ *     6 ghostState   0 = the nearest ghost hunts, 1 = frightened and edible
+ *     7 ghost2Dist   maze steps to the second nearest ghost / maze diameter
+ *  8-9 ghost2Dir     unit vector of the neighbour starting that shortest path
+ * 10-11 powerDir     unit vector toward the nearest power pellet, (0,0) if none
+ *    12 aheadClear   1 when the tile in front of the current heading is open
+ *    13 progress     pellets eaten on this board / 244
  */
 export const PACMAN_INPUT_LABELS = [
   'PELLET d',
@@ -53,6 +61,9 @@ export const PACMAN_INPUT_LABELS = [
   'GHOST dx',
   'GHOST dy',
   'GHOST state',
+  'GHOST2 d',
+  'GHOST2 dx',
+  'GHOST2 dy',
   'POWER dx',
   'POWER dy',
   'AHEAD clear',

@@ -36,9 +36,9 @@ algorithms, with two deliberate departures that are documented and measured belo
 
 | Piece | Value |
 |---|---|
-| Perception vector | 11 inputs |
-| Network | `11 → 6 (ReLU) → 4`, softmax over outputs |
-| Genome | 100 float weights |
+| Perception vector | 14 inputs |
+| Network | `14 → 6 (ReLU) → 4`, softmax over outputs |
+| Genome | 118 float weights |
 | Action | sampled from the softmax (temperature 1.0) |
 | Selection | tournament, k = 3 |
 | Crossover | single-point on the flat genome, rate 0.8 |
@@ -107,8 +107,10 @@ learning limitation, not an environment one.
 
 ## 4. Inputs — the perception vector
 
-11 dimensions. The writeup recommends 8–12 (too few and the AI turns ultra-passive;
-too many and it overfits one map), so we sit inside that band.
+14 dimensions. The writeup recommends 8–12 (too few and the AI turns ultra-passive;
+too many and it overfits one map). We sat inside that band at 11 until the
+second-nearest ghost earned its place — see §17, item 2, for the measurement that
+justified going over.
 
 | # | Input | Range | Meaning |
 |---|---|---|---|
@@ -117,9 +119,11 @@ too many and it overfits one map), so we sit inside that band.
 | 3 | `ghostDist` | 0–1 | Maze steps to nearest on-board ghost ÷ 52 |
 | 4–5 | `ghostDir` | −1/0/1 each | **Unit vector** of the neighbour starting the shortest path to it |
 | 6 | `ghostState` | 0 or 1 | 0 = that ghost is hunting, 1 = frightened and edible |
-| 7–8 | `powerDir` | −1/0/1 each | Unit vector toward nearest power pellet; `(0,0)` when none remain |
-| 9 | `aheadClear` | 0 or 1 | Is the tile in front of the current heading open? |
-| 10 | `progress` | 0–1 | Pellets eaten on this board ÷ 244 |
+| 7 | `ghost2Dist` | 0–1 | Maze steps to the **second** nearest on-board ghost ÷ 52 |
+| 8–9 | `ghost2Dir` | −1/0/1 each | Unit vector of the neighbour starting the shortest path to that one |
+| 10–11 | `powerDir` | −1/0/1 each | Unit vector toward nearest power pellet; `(0,0)` when none remain |
+| 12 | `aheadClear` | 0 or 1 | Is the tile in front of the current heading open? |
+| 13 | `progress` | 0–1 | Pellets eaten on this board ÷ 244 |
 
 ### Why each one
 
@@ -129,6 +133,9 @@ too many and it overfits one map), so we sit inside that band.
 - **`ghostDist` + `ghostDir`** are the survival signal, and the reason the writeup
   warns against dropping ghost inputs: an agent that can't see ghosts learns to
   hide rather than play.
+- **`ghost2Dist` + `ghost2Dir`** exist because one ghost is not enough to see a
+  *pincer*. With only the nearest ghost visible, an agent flees the one it can see
+  straight into the one it cannot — the classic way Pac-Man dies. Worth +17%.
 - **`ghostState`** lets one pair of direction inputs serve two opposite behaviours.
   Without it the net cannot tell "flee" from "chase", and power pellets are useless.
 - **`powerDir`** is the counterattack opportunity. `(0,0)` when all four are eaten
@@ -215,7 +222,7 @@ something other than what was evolved.
 
 ## 6. Network and genome layout
 
-`11 → 6 (ReLU) → 4`. Shallow on purpose: the writeup's §2.2 specifies one hidden
+`14 → 6 (ReLU) → 4`. Shallow on purpose: the writeup's §2.2 specifies one hidden
 layer of 4–8 units, and a bigger network explodes the search space that a GA has to
 cover by random variation alone.
 
@@ -223,11 +230,11 @@ Flat genome, layer-major and input-major with each layer's **bias row last**:
 
 | Segment | Indices | Count |
 |---|---|---|
-| Layer 1 weights | `[k * 6 + h]`, k ∈ 0..10, h ∈ 0..5 | 66 |
-| Layer 1 biases | `[66 + h]` | 6 |
-| Layer 2 weights | `[72 + h * 4 + m]`, h ∈ 0..5, m ∈ 0..3 | 24 |
-| Layer 2 biases | `[96 + m]` | 4 |
-| **Total** | | **100** |
+| Layer 1 weights | `[k * 6 + h]`, k ∈ 0..13, h ∈ 0..5 | 84 |
+| Layer 1 biases | `[84 + h]` | 6 |
+| Layer 2 weights | `[90 + h * 4 + m]`, h ∈ 0..5, m ∈ 0..3 | 24 |
+| Layer 2 biases | `[114 + m]` | 4 |
+| **Total** | | **118** |
 
 This is the same layout `NetworkPanel` expects, so the on-screen network diagram
 renders the real genome with no translation.
@@ -665,13 +672,59 @@ The shared machinery lives in `src/utils/evaluation.ts` (`episodeSeed`,
 apple spawns from a per-agent RNG and so has exactly the same noisy-fitness
 problem, currently unmeasured.
 
-### Tier 1 — aimed at the stall deaths that dominate our failure mode
+### Tier 1
 
-| # | Item | Writeup | Why it matters here | Effort |
-|---|---|---|---|---|
-| 1 | **Dead-end / corridor feature** | §5.2 | We *had* this as `escapeRoutes` and dropped it in the rewrite to match the writeup's 8-input list. Measured routing cost: **zero** (335 vs 333 tiles to clear a board). Stall is ~60% of deaths and walking into a sealable dead end is a direct cause. Cheapest real win available. | Low |
-| 2 | **Memory input** | §5.2 | Feed the previous action or previous perception back in. The writeup's rationale is sensing whether a ghost is *approaching or receding*; equally valuable here, it gives a stateless, loop-prone policy some sense of where it came from. | Low–Med |
-| 3 | **Average of the nearest *three* pellets** | §5.2 | Smooths the pellet signal. The agent currently chases a single nearest pellet and dithers when two are equidistant. | Low |
+| # | Item | Writeup | Status |
+|---|---|---|---|
+| 1 | Dead-end / corridor feature | §5.2 | **Abandoned — the maze has no dead ends.** See below. |
+| 2 | **Second-nearest ghost** | — | **DONE.** See below. |
+| 3 | Memory input | §5.2 | Open. Feed the previous action or perception back in, so the net can tell whether a ghost is closing or receding. |
+| 4 | Average of the nearest *three* pellets | §5.2 | Open. Smooths the pellet signal; the agent currently dithers when two pellets are equidistant. |
+
+#### Item 1 — abandoned, and worth knowing why
+
+The writeup recommends a dead-end topology feature, and we had one (`escapeRoutes`)
+before the rewrite. Measuring the maze before rebuilding it settled the question:
+
+| Tile degree | Count |
+|---|---|
+| 2 exits | 266 |
+| 3 exits | 28 |
+| 4 exits | 6 |
+| **1 exit (dead end)** | **0** |
+
+**The arcade maze contains no dead ends at all**, and all 640 (tile, direction)
+pairs reach the entire 300-tile graph without backtracking — it is fully
+2-connected. A dead-end feature would have been a constant. This also explains
+why `escapeRoutes` measured as costing nothing when we had it: it was
+contributing nothing either.
+
+The danger in this maze is not topological but dynamic — a ghost standing on your
+escape route — which is what item 2 addresses instead.
+
+#### Item 2 — second-nearest ghost (done)
+
+Once agents grew strong enough to eat near ghosts, being caught overtook stalling
+as the leading cause of death (35% to 53% between generations 1 and 40). The
+perception vector reported only the *nearest* ghost, so an agent could not
+perceive a pincer — two ghosts closing from opposite ends of a corridor — and
+fled the one it saw into the one it did not.
+
+Adding the second-nearest ghost's distance and direction (three inputs, 11 to 14)
+across three seeds at generation 25:
+
+| Perception | Per-seed average pellets | Mean |
+|---|---|---|
+| Nearest ghost only | 68.1, 71.5, 58.0 | 65.9 |
+| **Two nearest ghosts** | 86.5, 67.6, 77.5 | **77.2** |
+
+**+17%.** This puts the vector at 14 dimensions, above the writeup's 8-12
+guidance — a guideline formed with Euclidean distances and a weaker network.
+
+A methodological note that cost real time here: the *first* comparison used one
+seed and read 93.7 versus 88.8, which looked like a regression and nearly got the
+change reverted. Seed-to-seed variance spans 58 to 86, so a single-seed A/B on
+this demo is close to meaningless. Use at least three.
 
 ### Tier 2 — the plateau and population diversity
 
@@ -692,6 +745,6 @@ problem, currently unmeasured.
 
 ### Suggested order
 
-**Item 0 is done.** Next: **1 → 2 → 5.** The first two target the stall deaths that
-dominate our failure mode; item 5 is nearly free. Re-measure after each — every confident
+**Items 0 and 2 are done; item 1 was abandoned as inapplicable.** Next: the memory
+input (item 3), then the selection-pressure schedule, which is nearly free. Re-measure after each — every confident
 prediction in §10 was wrong, and each was settled by a two-minute headless A/B.
