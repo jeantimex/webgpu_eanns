@@ -1,5 +1,5 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
-import { COLS, mazeGraph, UNREACHABLE, WORLD_H, WORLD_W } from './maze';
+import { COLS, mazeGraph, ROWS, UNREACHABLE, WORLD_H, WORLD_W } from './maze';
 import { AGENT_FLOATS, type PacmanBuffers } from './pacman_buffers';
 
 // Atlas layout (single texture, sprites in row 0, maze at y=16):
@@ -61,6 +61,8 @@ const A_PELLETS = 36u;
 const WALK_STRIDE = ${graph.stride}u;
 const UNREACHABLE = ${UNREACHABLE}.0;
 const DEBUG_GHOST_PATH = 1u;
+const DEBUG_PELLET_PATH = 2u;
+const TILE_COUNT = ${COLS * ROWS}u;
 
 const QUAD = array<vec2f, 6>(
   vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
@@ -215,6 +217,38 @@ fn pathSteps(a: i32, b: i32) -> f32 {
 }
 
 /**
+ * Walk nSteps down the distance field toward a target tile. Each step must drop
+ * the remaining distance by exactly 1, which is what makes the result a shortest
+ * path rather than merely a path.
+ */
+fn descendPath(startC: i32, startR: i32, goal: i32, nSteps: u32) -> vec2i {
+  var curC = startC;
+  var curR = startR;
+  for (var s = 0u; s < nSteps; s++) {
+    let dHere = pathSteps(walkIndex(curC, curR), goal);
+    for (var d = 0u; d < 4u; d++) {
+      let dv = dbgDir(d);
+      let nr = curR + dv.y;
+      let nc = wrapCol(curC + dv.x, nr);
+      let nt = walkIndex(nc, nr);
+      if (nt < 0) { continue; }
+      if (pathSteps(nt, goal) == dHere - 1.0) { curC = nc; curR = nr; break; }
+    }
+  }
+  return vec2i(curC, curR);
+}
+
+fn pathQuad(vi: u32, tile: vec2i, color: vec4f) -> VertexOutput {
+  let size = 5.0;
+  let topLeft = vec2f(f32(tile.x) * 8.0 + 4.0 - size * 0.5, f32(tile.y) * 8.0 + 4.0 - size * 0.5);
+  var output: VertexOutput;
+  output.position = toNdc(topLeft + QUAD[vi] * size);
+  output.uv = vec2f(0.0, 0.0);
+  output.color = color;
+  return output;
+}
+
+/**
  * Debug overlay for the ghostDist / ghostDir network inputs: one quad per tile
  * of the true shortest path from pacman to the nearest ghost on the board.
  * Instance ii is the tile ii steps along that path, so the number of quads
@@ -226,12 +260,13 @@ fn vsGhostPath(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
   if ((uni.debugFlags & DEBUG_GHOST_PATH) == 0u) { return deadOut(); }
   let base = uni.bestIndex * AGENT_FLOATS;
 
-  var curC = i32(round(agents[base]));
-  var curR = i32(round(agents[base + 1u]));
-  let pacTile = walkIndex(curC, curR);
+  let pacC = i32(round(agents[base]));
+  let pacR = i32(round(agents[base + 1u]));
+  let pacTile = walkIndex(pacC, pacR);
   if (pacTile < 0) { return deadOut(); }
 
-  // Nearest ghost that is actually on the board (skip eyes and housebound).
+  // Nearest ghost that is actually on the board (skip eyes and housebound),
+  // matching how the perception vector picks its ghost.
   var bestD = UNREACHABLE;
   var ghostTile = -1;
   for (var g = 0u; g < 4u; g++) {
@@ -244,29 +279,46 @@ fn vsGhostPath(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
   }
   if (ghostTile < 0 || bestD >= UNREACHABLE || f32(ii) > bestD) { return deadOut(); }
 
-  // Descend the distance field ii times: each step must drop the remaining
-  // distance by exactly 1, which is what makes this the shortest path.
-  for (var s = 0u; s < ii; s++) {
-    let dHere = pathSteps(walkIndex(curC, curR), ghostTile);
-    for (var d = 0u; d < 4u; d++) {
-      let dv = dbgDir(d);
-      let nr = curR + dv.y;
-      let nc = wrapCol(curC + dv.x, nr);
-      let nt = walkIndex(nc, nr);
-      if (nt < 0) { continue; }
-      if (pathSteps(nt, ghostTile) == dHere - 1.0) { curC = nc; curR = nr; break; }
-    }
-  }
-
   // Yellow at pacman fading to red at the ghost, so direction reads at a glance.
   let t = select(f32(ii) / bestD, 0.0, bestD <= 0.0);
-  let size = 5.0;
-  let topLeft = vec2f(f32(curC) * 8.0 + 4.0 - size * 0.5, f32(curR) * 8.0 + 4.0 - size * 0.5);
-  var output: VertexOutput;
-  output.position = toNdc(topLeft + QUAD[vi] * size);
-  output.uv = vec2f(0.0, 0.0);
-  output.color = vec4f(1.0, 0.85 - 0.85 * t, 0.1, 0.75);
-  return output;
+  return pathQuad(vi, descendPath(pacC, pacR, ghostTile, ii), vec4f(1.0, 0.85 - 0.85 * t, 0.1, 0.75));
+}
+
+/**
+ * Same overlay for the pelletDist / pelletDir inputs, in green: the shortest
+ * path to the nearest *remaining* pellet. Eaten pellets clear their bit, so the
+ * trail re-targets the moment pacman swallows the one it was heading for.
+ */
+@vertex
+fn vsPelletPath(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  if ((uni.debugFlags & DEBUG_PELLET_PATH) == 0u) { return deadOut(); }
+  let base = uni.bestIndex * AGENT_FLOATS;
+
+  let pacC = i32(round(agents[base]));
+  let pacR = i32(round(agents[base + 1u]));
+  let pacTile = walkIndex(pacC, pacR);
+  if (pacTile < 0) { return deadOut(); }
+
+  var bestD = UNREACHABLE;
+  var pelletTile = -1;
+  for (var w = 0u; w < 28u; w++) {
+    var word = bitcast<u32>(agents[base + A_PELLETS + w]);
+    while (word != 0u) {
+      let bit = firstTrailingBit(word);
+      word &= word - 1u;
+      let idx = w * 32u + bit;
+      if (idx >= TILE_COUNT) { continue; }
+      let pt = tileIndex[idx];
+      if (pt < 0) { continue; }
+      let d = pathSteps(pacTile, pt);
+      if (d < bestD) { bestD = d; pelletTile = pt; }
+    }
+  }
+  if (pelletTile < 0 || bestD >= UNREACHABLE || f32(ii) > bestD) { return deadOut(); }
+
+  // Bright green at pacman deepening toward the pellet it is aiming for.
+  let t = select(f32(ii) / bestD, 0.0, bestD <= 0.0);
+  return pathQuad(vi, descendPath(pacC, pacR, pelletTile, ii), vec4f(0.35 - 0.25 * t, 1.0 - 0.3 * t, 0.4 - 0.3 * t, 0.75));
 }
 
 @fragment
@@ -314,11 +366,12 @@ export class PacmanRenderer {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
   private readonly uniformBuffer: GPUBuffer;
-  private readonly pipelines: Record<'maze' | 'pellet' | 'ghost' | 'pac' | 'fruit' | 'ghostPath', GPURenderPipeline>;
+  private readonly pipelines: Record<'maze' | 'pellet' | 'ghost' | 'pac' | 'fruit' | 'ghostPath' | 'pelletPath', GPURenderPipeline>;
   private readonly bindGroup: GPUBindGroup;
   private readonly pelletCount: number;
   private bestIndex = 0;
   private showGhostPath = false;
+  private showPelletPath = false;
 
   private constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -376,6 +429,7 @@ export class PacmanRenderer {
       pac: makePipeline('vsPac'),
       fruit: makePipeline('vsFruit'),
       ghostPath: makePipeline('vsGhostPath', 'fragmentSolid'),
+      pelletPath: makePipeline('vsPelletPath', 'fragmentSolid'),
     };
 
     this.bindGroup = this.device.createBindGroup({
@@ -407,6 +461,11 @@ export class PacmanRenderer {
     this.showGhostPath = show;
   }
 
+  /** Debug overlay: trace the BFS shortest path to the nearest remaining pellet. */
+  setShowPelletPath(show: boolean): void {
+    this.showPelletPath = show;
+  }
+
   render(animTime: number): void {
     resizeCanvasToDisplaySize(this.canvas, this.device.limits.maxTextureDimension2D);
 
@@ -425,7 +484,7 @@ export class PacmanRenderer {
     ]);
     new Uint32Array(data)[4] = this.bestIndex;
     new Float32Array(data)[5] = animTime;
-    new Uint32Array(data)[6] = this.showGhostPath ? 1 : 0;
+    new Uint32Array(data)[6] = (this.showGhostPath ? 1 : 0) | (this.showPelletPath ? 2 : 0);
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
 
     const encoder = this.device.createCommandEncoder({ label: 'pacman frame' });
@@ -441,6 +500,8 @@ export class PacmanRenderer {
     pass.setBindGroup(0, this.bindGroup);
     pass.setPipeline(this.pipelines.maze);
     pass.draw(6);
+    pass.setPipeline(this.pipelines.pelletPath);
+    pass.draw(6, GHOST_PATH_INSTANCES);
     pass.setPipeline(this.pipelines.ghostPath);
     pass.draw(6, GHOST_PATH_INSTANCES);
     pass.setPipeline(this.pipelines.pellet);

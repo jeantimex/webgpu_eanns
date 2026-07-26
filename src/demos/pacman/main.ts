@@ -130,7 +130,10 @@ async function main(): Promise<void> {
     },
   }, {
     // Debug overlays for the perception vector the network actually sees.
-    toggles: [{ label: 'Ghost BFS path', onChange: (on: boolean) => renderer.setShowGhostPath(on) }],
+    toggles: [
+      { label: 'Pellet BFS path', onChange: (on: boolean) => renderer.setShowPelletPath(on) },
+      { label: 'Ghost BFS path', onChange: (on: boolean) => renderer.setShowGhostPath(on) },
+    ],
   });
 
   // Fixed 60 Hz sim ticks (the source engine's logic rate) x sim speed.
