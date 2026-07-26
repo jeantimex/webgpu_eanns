@@ -276,7 +276,19 @@ export class FlappyRenderer {
     });
     // Same draw order as the original sketch: bg, pipes, birds, ground on top.
     // Clip to the world rect so top pipes don't overflow into the letterbox margin.
-    pass.setScissorRect(Math.floor(marginX), Math.floor(marginY), Math.ceil(WORLD_W * scale), Math.ceil(WORLD_H * scale));
+    // Clamp into range. Aspect-fit makes one margin exactly zero in theory, but
+    // WORLD_W * (cw / WORLD_W) can land a few ulps *above* cw, so the margin comes
+    // out at -1.4e-14 and Math.floor turns that into -1 — which setScissorRect
+    // rejects outright. The ceil'd extent can likewise overshoot the target by a
+    // pixel. Both are hard errors rather than visual glitches.
+    const sx = Math.max(0, Math.floor(marginX));
+    const sy = Math.max(0, Math.floor(marginY));
+    pass.setScissorRect(
+      sx,
+      sy,
+      Math.max(0, Math.min(Math.ceil(WORLD_W * scale), cw - sx)),
+      Math.max(0, Math.min(Math.ceil(WORLD_H * scale), ch - sy)),
+    );
     pass.setPipeline(this.pipelines.bg);
     pass.setBindGroup(0, this.bindGroups.bg);
     pass.draw(6);
