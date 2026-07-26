@@ -142,11 +142,12 @@ export interface TournamentOptions {
   /** Half-width of the range a mutated weight is reset into (default 1). */
   mutateRange?: number;
   /**
-   * Share of mutations that are resets; the rest are gaussian drifts (default 1,
-   * i.e. resets only). Reset-only mutation can never produce a weight outside
-   * +/-mutateRange, because crossover merely copies values that already exist —
-   * so the reachable weight space is a sealed box and a softmax policy built on
-   * it can never grow confident. Mixing in drift lets magnitudes escape.
+   * Share of mutations that are resets; the rest are gaussian drifts (default
+   * 0.5). Do not set this to 1 without knowing what you are giving up: with
+   * resets only, no weight can ever leave +/-mutateRange, because crossover
+   * merely copies values that already exist. The reachable weight space becomes
+   * a sealed box, logits stay small, and a softmax policy built on it can never
+   * become confident. Measured cost on the pacman demo: 40.3 vs 68.4 pellets.
    */
   resetShare?: number;
   /** Gaussian sigma for drift mutations (default 0.5). */
@@ -187,7 +188,7 @@ export function nextTournamentGeneration(
     crossoverRate = 0.8,
     mutateRate = 0.05,
     mutateRange = 1,
-    resetShare = 1,
+    resetShare = 0.5,
     driftSigma = 0.5,
     clamp = 8,
   } = options;
