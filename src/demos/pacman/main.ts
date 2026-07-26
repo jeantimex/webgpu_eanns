@@ -168,6 +168,7 @@ async function main(): Promise<void> {
               ['GEN', evolution.generation],
               ['SCORE', best.score],
               ['BEST SCORE', best.bestScore],
+              ['BEST LEVEL', best.bestLevel],
               ['BEST GEN', best.bestGeneration],
               ['DOTS', best.dotsLeft],
               ['LEVEL', best.level],

@@ -18,6 +18,7 @@ struct SimParams {
 @group(0) @binding(1) var<storage, read> genomes: array<f32>; // [16 feature inputs -> 4 direction outputs]
 @group(0) @binding(2) var<storage, read_write> agents: array<f32>;
 @group(0) @binding(3) var<storage, read> mazeBits: array<u32>; // 31 words, bit c = wall
+@group(0) @binding(4) var<storage, read> initPellets: array<u32>; // 28 words
 
 // Agent layout (must match A in pacman_buffers.ts).
 const A_DIR = 2u;
@@ -41,6 +42,8 @@ const A_FRUIT = 35u;
 const A_PELLETS = 36u; // 28 u32 words
 const A_PELLET_PROGRESS = 64u;
 const A_TOTAL_REWARD = 65u;
+const A_PREVIOUS_CHOICE = 66u;
+const A_REVERSAL_STREAK = 67u;
 
 const AGENT_FLOATS = 68u;
 const DT = 0.016666667; // 1/60
@@ -73,6 +76,12 @@ fn isWallCell(c: i32, r: i32) -> bool {
   return ((mazeBits[r] >> u32(c)) & 1u) == 1u;
 }
 
+fn isGhostPathCell(c: i32, r: i32) -> bool {
+  if (c == 13 && r >= 10 && r <= 14) { return true; }
+  if (c == 14 && r >= 10 && r <= 14) { return true; }
+  return !isWallCell(c, r);
+}
+
 fn wallAhead(x: f32, y: f32, d: u32, step: f32) -> bool {
   let dv = dirVec(d);
   let nx = x + dv.x * step;
@@ -81,12 +90,56 @@ fn wallAhead(x: f32, y: f32, d: u32, step: f32) -> bool {
 }
 
 fn warpX(x: f32, y: f32) -> f32 {
-  if (y > 13.0 && y < 15.0) {
+  if (abs(y - 14.0) < 0.75) {
     if (x < -0.75) { return 27.75; }
     if (x > 27.75) { return -0.75; }
     return x;
   }
   return clamp(x, 0.0, 27.0);
+}
+
+fn keepInMaze(pos: vec2f, previous: vec2f) -> vec2f {
+  var p = pos;
+  if (abs(p.y - 14.0) < 0.75) {
+    p.y = 14.0;
+    p.x = warpX(p.x, p.y);
+    let c = i32(floor(p.x + 0.5));
+    if (!isGhostPathCell(c, 14)) {
+      return previous;
+    }
+    return p;
+  }
+  p.x = clamp(p.x, 0.0, 27.0);
+  p.y = clamp(p.y, 0.0, 30.0);
+  let c = i32(floor(p.x + 0.5));
+  let r = i32(floor(p.y + 0.5));
+  if (!isGhostPathCell(c, r)) {
+    return previous;
+  }
+  return p;
+}
+
+fn keepHouseExit(pos: vec2f, previous: vec2f) -> vec2f {
+  var p = pos;
+  if (p.y < 10.5) {
+    return vec2f(13.5, 10.5);
+  }
+  if (abs(p.x - 13.5) < 0.35 && p.y <= 14.75) {
+    p.x = 13.5;
+    p.y = clamp(p.y, 10.5, 14.5);
+    return p;
+  }
+  if (p.y > 13.25 && p.y <= 14.75) {
+    p.x = clamp(p.x, 11.0, 16.0);
+    p.y = 14.0;
+    return p;
+  }
+  if (p.y <= 13.25) {
+    p.x = 13.5;
+    p.y = clamp(p.y, 10.5, 14.5);
+    return p;
+  }
+  return keepInMaze(p, previous);
 }
 
 fn dist2(x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
@@ -107,6 +160,18 @@ fn hash(seed: u32) -> u32 {
 
 fn rand01(seed: u32) -> f32 {
   return f32(hash(seed) & 0x00ffffffu) / 16777216.0;
+}
+
+fn frightenedDuration(level: f32) -> f32 {
+  return max(1.5, 6.0 - floor(level - 1.0) * 0.45);
+}
+
+fn normalGhostSpeed(level: f32) -> f32 {
+  return min(0.95, 0.76 + floor(level - 1.0) * 0.02);
+}
+
+fn scaredGhostSpeed(level: f32) -> f32 {
+  return max(0.35, 0.5 - floor(level - 1.0) * 0.015);
 }
 
 fn nearestPelletDist(x: f32, y: f32, b: u32) -> f32 {
@@ -229,6 +294,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var ghostRepelVec = vec2f(0.0);
   var nearestGhostVec = vec2f(0.0);
   var nearestGhostD = 1e9;
+  var nearestThreatD = 1e9;
   for (var g = 0u; g < 4u; g++) {
     let gb = gbase + g * 4u;
     let gmode = agents[gb + 3u];
@@ -236,6 +302,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let gdy = agents[gb + 1u] - py;
     let gd = gdx * gdx + gdy * gdy;
     if (gmode != 2.0) {
+      if (gmode <= 1.0) {
+        nearestThreatD = min(nearestThreatD, gd);
+      }
       if (gd < nearestGhostD) {
         nearestGhostD = gd;
         nearestGhostVec = vec2f(gdx, gdy);
@@ -306,20 +375,39 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let oldPelletDist = nearestPelletDist(px, py, b);
     let step = PAC_SPEED * DT;
     let snapped = select(abs(px - round(px)) < step * 0.5, abs(py - round(py)) < step * 0.5, pdir <= 1u);
-    let isCloseGhost = nearestGhostD < 16.0; // ghost within 4 tiles
+    let isCloseGhost = nearestThreatD < 16.0; // active ghost within 4 tiles
     if (snapped || isCloseGhost) {
+      let reverseDir = opp(pdir);
+      var legalCount = 0u;
+      var nonReverseLegalCount = 0u;
+      for (var a = 0u; a < 4u; a++) {
+        let cand = actionToDir[a];
+        if (!wallAhead(px, py, cand, step)) {
+          legalCount++;
+          if (cand != reverseDir) { nonReverseLegalCount++; }
+        }
+      }
+      let avoidReverse = !isPlayer && !isCloseGhost && nonReverseLegalCount > 0u;
+      if (avoidReverse && desired == reverseDir) {
+        var legalBest = -1e30;
+        for (var a = 0u; a < 4u; a++) {
+          let cand = actionToDir[a];
+          if (cand != reverseDir && !wallAhead(px, py, cand, step) && outputs[a] > legalBest) {
+            legalBest = outputs[a];
+            desired = cand;
+          }
+        }
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] - 0.3;
+      }
       let exploreSeed = params.rngSeed ^ (i * 747796405u) ^ (ticks * 2891336453u);
       if (i < params.trainCount && rand01(exploreSeed) < 0.08) {
-        var legalCount = 0u;
-        for (var a = 0u; a < 4u; a++) {
-          if (!wallAhead(px, py, actionToDir[a], step)) { legalCount++; }
-        }
-        if (legalCount > 0u) {
-          let pickIndex = u32(floor(rand01(exploreSeed ^ 0xa511e9b3u) * f32(legalCount)));
+        let exploreCount = select(legalCount, nonReverseLegalCount, avoidReverse);
+        if (exploreCount > 0u) {
+          let pickIndex = u32(floor(rand01(exploreSeed ^ 0xa511e9b3u) * f32(exploreCount)));
           var seen = 0u;
           for (var a = 0u; a < 4u; a++) {
             let cand = actionToDir[a];
-            if (!wallAhead(px, py, cand, step)) {
+            if (!wallAhead(px, py, cand, step) && (!avoidReverse || cand != reverseDir)) {
               if (seen == pickIndex) { desired = cand; }
               seen++;
             }
@@ -342,6 +430,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
       }
       if (!isPlayer) {
+        let previousChoice = u32(agents[b + A_PREVIOUS_CHOICE]);
+        if (desired != previousChoice) {
+          if (desired == opp(previousChoice) && !isCloseGhost && nonReverseLegalCount > 0u) {
+            let streak = min(agents[b + A_REVERSAL_STREAK] + 1.0, 12.0);
+            agents[b + A_REVERSAL_STREAK] = streak;
+            agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] - 0.35 * streak;
+          } else {
+            agents[b + A_REVERSAL_STREAK] = 0.0;
+          }
+          agents[b + A_PREVIOUS_CHOICE] = f32(desired);
+        }
         agents[b + A_DESIRED] = f32(desired);
       }
       if (wallAhead(px, py, desired, step)) {
@@ -385,6 +484,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let progress = oldPelletDist - newPelletDist;
       agents[b + A_PELLET_PROGRESS] = agents[b + A_PELLET_PROGRESS] + max(progress, 0.0);
       agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + clamp(progress, -0.05, 0.25);
+      if (!isPlayer && nearestGhostD > 64.0 && oldPelletDist <= 8.0) {
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + clamp(progress * 0.5, -0.08, 0.4);
+      }
+    } else if (!isPlayer) {
+      agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] - select(0.75, 0.08, isCloseGhost);
     }
   }
   agents[b] = px;
@@ -406,8 +510,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let isPower = (er == 3 || er == 23) && (ec == 1 || ec == 26);
       if (isPower) {
         agents[b + A_SCORE] = agents[b + A_SCORE] + 50.0;
-        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 50.0;
-        agents[b + A_FRIGHT] = 6.0;
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 120.0;
+        agents[b + A_FRIGHT] = frightenedDuration(agents[b + A_LEVEL]);
         agents[b + A_COMBO] = 0.0;
         for (var g = 0u; g < 4u; g++) {
           let gb = gbase + g * 4u;
@@ -418,7 +522,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
       } else {
         agents[b + A_SCORE] = agents[b + A_SCORE] + 10.0;
-        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 10.0;
+        agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 60.0;
       }
     }
   }
@@ -445,6 +549,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let gb = gbase + g * 4u;
     var gx = agents[gb];
     var gy = agents[gb + 1u];
+    let oldGhostPos = vec2f(gx, gy);
     var gdir = u32(agents[gb + 2u]);
     var mode = u32(agents[gb + 3u]);
 
@@ -456,8 +561,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gy += dv.y * 0.4 * PAC_SPEED * DT;
     } else if (mode == 4u) {
       // Leaving the house: center on x=13.5, up through the door, then left.
-      if (gx == 13.5 && gy > 10.8 && gy < 11.0) {
+      if (abs(gx - 13.5) < 0.2 && gy <= 11.0) {
         mode = 0u;
+        gx = 13.5;
         gy = 10.5;
         gdir = 2u;
       } else if (gx > 13.4 && gx < 13.6) {
@@ -465,17 +571,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         gdir = 0u;
       } else if (gy > 13.9 && gy < 14.2) {
         gy = 14.0;
-        gdir = select(3u, 2u, gx < 13.5);
+        gdir = select(2u, 3u, gx < 13.5);
       }
       let dv = dirVec(gdir);
       gx += dv.x * 0.4 * PAC_SPEED * DT;
       gy += dv.y * 0.4 * PAC_SPEED * DT;
     } else {
       // Speed: eyes 2x, tunnel/house 0.4x, scared 0.5x, else 0.76x of pac speed.
-      var mult = 0.76;
+      var mult = normalGhostSpeed(agents[b + A_LEVEL]);
       if (mode == 2u) { mult = 2.0; }
-      else if ((gy == 14.0 && (gx < 6.0 || gx > 21.0)) || (gx > 9.0 && gx < 18.0 && gy > 11.0 && gy < 17.0)) { mult = 0.4; }
-      else if (mode == 1u) { mult = 0.5; }
+      else if ((abs(gy - 14.0) < 0.75 && (gx < 6.0 || gx > 21.0)) || (gx > 9.0 && gx < 18.0 && gy > 11.0 && gy < 17.0)) { mult = 0.4; }
+      else if (mode == 1u) { mult = scaredGhostSpeed(agents[b + A_LEVEL]); }
       let step = mult * PAC_SPEED * DT;
 
       let snapped = select(abs(gx - round(gx)) < step * 0.5, abs(gy - round(gy)) < step * 0.5, gdir <= 1u);
@@ -547,9 +653,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           gx = nx; gy = ny;
         }
       }
-      gx = warpX(gx, gy);
-      gy = clamp(gy, 0.0, 30.0);
     }
+
+    let boundedGhostPos = select(select(keepInMaze(vec2f(gx, gy), oldGhostPos), keepHouseExit(vec2f(gx, gy), oldGhostPos), mode == 4u), vec2f(gx, clamp(gy, 13.5, 14.5)), mode == 3u);
+    gx = boundedGhostPos.x;
+    gy = boundedGhostPos.y;
 
     agents[gb] = gx;
     agents[gb + 1u] = gy;
@@ -571,10 +679,34 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  // --- Level clear: terminal success for training. ---
+  // --- Level clear: advance to the next board, keeping score alive. ---
   if (agents[b + A_DOTS] <= 0.0) {
     agents[b + A_TOTAL_REWARD] = agents[b + A_TOTAL_REWARD] + 1000.0 + f32(MAX_TICKS - ticks) * 0.1;
-    agents[b + A_OVER] = 1.0;
+    agents[b + A_LEVEL] = agents[b + A_LEVEL] + 1.0;
+    agents[b] = 13.5;
+    agents[b + 1u] = 23.0;
+    agents[b + A_DIR] = 2.0;
+    agents[b + A_DESIRED] = 2.0;
+    agents[b + A_MOVING] = 1.0;
+    agents[b + A_DOTS] = 244.0;
+    agents[b + A_MODET] = 0.0;
+    agents[b + A_PHASE] = 0.0;
+    agents[b + A_FRIGHT] = 0.0;
+    agents[b + A_COMBO] = 0.0;
+    agents[b + A_HOUSET] = 0.0;
+    agents[b + A_RELEASED] = 0.0;
+    agents[b + A_SINCE_EAT] = 0.0;
+    agents[b + A_FRUIT] = 0.0;
+    agents[b + A_PREVIOUS_CHOICE] = 2.0;
+    agents[b + A_REVERSAL_STREAK] = 0.0;
+    for (var w = 0u; w < 28u; w++) {
+      agents[b + A_PELLETS + w] = bitcast<f32>(initPellets[w]);
+    }
+    let resetG = b + A_GHOSTS;
+    agents[resetG] = 13.5; agents[resetG + 1u] = 11.0; agents[resetG + 2u] = 2.0; agents[resetG + 3u] = 0.0;
+    agents[resetG + 4u] = 13.5; agents[resetG + 5u] = 14.0; agents[resetG + 6u] = 1.0; agents[resetG + 7u] = 3.0;
+    agents[resetG + 8u] = 11.5; agents[resetG + 9u] = 14.0; agents[resetG + 10u] = 0.0; agents[resetG + 11u] = 3.0;
+    agents[resetG + 12u] = 15.5; agents[resetG + 13u] = 14.0; agents[resetG + 14u] = 0.0; agents[resetG + 15u] = 3.0;
     return;
   }
 }

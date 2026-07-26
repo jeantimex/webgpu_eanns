@@ -43,6 +43,8 @@ export const A = {
   pellets: 36, // 28 u32 words: bit (r*28+c) = pellet present
   pelletProgress: 64, // hidden training signal: accumulated decrease in nearest-pellet distance
   totalReward: 65, // hidden training signal: accumulated environment reward
+  previousChoice: 66, // hidden training signal: last AI direction choice
+  reversalStreak: 67, // hidden training signal: consecutive opposite choices
 } as const;
 
 // Movement/scoring constants from the source repo (speeds in tiles/sec; engine dt = 1/60).
@@ -82,6 +84,7 @@ export function initialAgentStates(count: number): Float32Array<ArrayBuffer> {
     states[o + A.posY] = 23;
     states[o + A.dir] = 2; // left
     states[o + A.desired] = 2;
+    states[o + A.previousChoice] = 2;
     states[o + A.moving] = 1;
     states[o + A.lives] = START_LIVES;
     states[o + A.dotsLeft] = 244;

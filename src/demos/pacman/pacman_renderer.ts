@@ -49,6 +49,7 @@ struct Uniforms {
 @group(0) @binding(4) var<storage, read> pelletList: array<u32>; // c, r, power, pad per pellet
 
 const AGENT_FLOATS = 68u;
+const A_LEVEL = 8u;
 const A_GHOSTS = 17u;
 const A_PELLETS = 36u;
 
@@ -71,7 +72,7 @@ fn texOut(c: vec2f, topLeft: vec2f, srcTopLeft: vec2f) -> VertexOutput {
   var output: VertexOutput;
   output.position = toNdc(topLeft + c * 16.0);
   output.uv = (srcTopLeft + c * 16.0) / vec2f(${ATLAS_W}.0, ${ATLAS_H}.0);
-  output.color = vec4f(-1.0, 0.0, 0.0, 0.0);
+  output.color = vec4f(0.0, 0.0, 0.0, -1.0);
   return output;
 }
 
@@ -79,7 +80,7 @@ fn deadOut() -> VertexOutput {
   var output: VertexOutput;
   output.position = vec4f(-2.0, -2.0, 0.0, 1.0);
   output.uv = vec2f(0.0, 0.0);
-  output.color = vec4f(-1.0, 0.0, 0.0, 0.0);
+  output.color = vec4f(0.0, 0.0, 0.0, -1.0);
   return output;
 }
 
@@ -88,13 +89,28 @@ fn charTopLeft(x: f32, y: f32) -> vec2f {
   return vec2f((x - 0.5) * 8.0, (y - 0.5) * 8.0);
 }
 
+fn mazeTint(level: u32) -> vec3f {
+  switch ((level - 1u) % 8u) {
+    case 0u: { return vec3f(0.12, 0.24, 1.0); }
+    case 1u: { return vec3f(0.95, 0.18, 0.32); }
+    case 2u: { return vec3f(0.0, 0.72, 0.42); }
+    case 3u: { return vec3f(1.0, 0.58, 0.1); }
+    case 4u: { return vec3f(0.7, 0.28, 1.0); }
+    case 5u: { return vec3f(0.0, 0.7, 0.9); }
+    case 6u: { return vec3f(1.0, 0.86, 0.18); }
+    default: { return vec3f(0.95, 0.95, 1.0); }
+  }
+}
+
 @vertex
 fn vsMaze(@builtin(vertex_index) vi: u32) -> VertexOutput {
   let c = QUAD[vi];
+  let base = uni.bestIndex * AGENT_FLOATS;
+  let level = max(1u, u32(agents[base + A_LEVEL]));
   var output: VertexOutput;
   output.position = toNdc(c * vec2f(${WORLD_W}.0, ${WORLD_H}.0));
   output.uv = (vec2f(0.0, ${MAZE_Y}.0) + c * vec2f(${WORLD_W}.0, ${WORLD_H}.0)) / vec2f(${ATLAS_W}.0, ${ATLAS_H}.0);
-  output.color = vec4f(-1.0, 0.0, 0.0, 0.0);
+  output.color = vec4f(mazeTint(level), 1.0);
   return output;
 }
 
@@ -160,7 +176,12 @@ fn vsFruit(@builtin(vertex_index) vi: u32) -> VertexOutput {
 
 @fragment
 fn fragmentTex(input: VertexOutput) -> @location(0) vec4f {
-  return textureSample(atlas, smp, input.uv);
+  let tex = textureSample(atlas, smp, input.uv);
+  if (input.color.a >= 0.0) {
+    let intensity = max(max(tex.r, tex.g), tex.b);
+    return vec4f(input.color.rgb * intensity, tex.a);
+  }
+  return tex;
 }
 
 @fragment

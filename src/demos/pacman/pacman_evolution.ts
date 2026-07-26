@@ -51,6 +51,7 @@ export interface BestAgentSnapshot {
   aliveCount: number;
   bestScore: number;
   bestGeneration: number;
+  bestLevel: number;
 }
 
 /**
@@ -70,6 +71,7 @@ export class PacmanEvolution {
   private bestGenome: Float64Array;
   private bestFitness = -Infinity;
   private bestScore = 0;
+  private bestLevel = 1;
   private bestGeneration = 1;
   private readPending: Promise<Float32Array<ArrayBuffer>> | null = null;
   private isEvolving = false;
@@ -104,6 +106,7 @@ export class PacmanEvolution {
         { binding: 1, resource: { buffer: buffers.genomes } },
         { binding: 2, resource: { buffer: buffers.agents } },
         { binding: 3, resource: { buffer: buffers.mazeBits } },
+        { binding: 4, resource: { buffer: buffers.initPellets } },
       ],
     });
     this.workgroups = Math.ceil(this.buffers.totalAgents / 64);
@@ -124,20 +127,22 @@ export class PacmanEvolution {
     return this.genomes[this.displayIndex];
   }
 
-  bestMeta(): { generation: number; eval: number; score: number } {
+  bestMeta(): { generation: number; eval: number; score: number; level: number } {
     return {
       generation: this.bestGeneration,
       eval: Number.isFinite(this.bestFitness) ? this.bestFitness : 0,
       score: this.bestScore,
+      level: this.bestLevel,
     };
   }
 
-  injectBest(weights: Float64Array, eval_ = 0, score = 0, generation = this.generation): void {
+  injectBest(weights: Float64Array, eval_ = 0, score = 0, generation = this.generation, level = 1): void {
     this.genomes[0] = weights.slice();
     this.genomes[this.displayIndex] = weights.slice();
     this.bestGenome = weights.slice();
     this.bestFitness = eval_;
     this.bestScore = score;
+    this.bestLevel = level;
     this.bestGeneration = generation;
     this.uploadGenomes();
     this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents));
@@ -223,19 +228,29 @@ export class PacmanEvolution {
       }
       if (aliveCount > 0) return;
 
-      // MatheusPaixaoG/Pacman-with-GA uses final game score as fitness.
+      // Clearing boards is the primary objective. Arcade score and shaping are
+      // tie-breakers, so GA consistently prefers eating one more pellet over
+      // surviving longer with a similar score.
       const fitnesses = new Float64Array(this.populationSize);
       for (let i = 0; i < this.populationSize; i++) {
         const o = i * AGENT_FLOATS;
         const score = states[o + A.score];
-        fitnesses[i] = Math.max(1, score);
+        const level = states[o + A.level];
+        const levelsCleared = Math.max(0, level - 1);
+        const pelletsEaten = levelsCleared * 244 + (244 - states[o + A.dotsLeft]);
+        const rewardDelta = states[o + A.totalReward] - score;
+        const pelletProgress = states[o + A.pelletProgress];
+        const shapedFitness = levelsCleared * 100_000 + pelletsEaten * 500 + score + Math.max(-1000, rewardDelta) + pelletProgress * 5;
+        this.bestLevel = Math.max(this.bestLevel, level);
+        fitnesses[i] = Math.max(1, shapedFitness);
         if (fitnesses[i] > this.bestFitness) {
           this.bestFitness = fitnesses[i];
           this.bestScore = score;
+          this.bestLevel = level;
           this.bestGeneration = this.generation;
           this.bestGenome = new Float64Array(this.genomes[i]);
           this.genomes[this.displayIndex].set(this.bestGenome);
-          autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore);
+          autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore, this.bestLevel);
         }
       }
       const next = nextCrossoverGeneration(
@@ -293,6 +308,7 @@ export class PacmanEvolution {
       aliveCount,
       bestScore: this.bestScore,
       bestGeneration: this.bestGeneration,
+      bestLevel: this.bestLevel,
     };
   }
 }

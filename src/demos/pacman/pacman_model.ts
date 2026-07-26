@@ -3,7 +3,7 @@ import { PACMAN_GENOME_SIZE, PACMAN_TOPOLOGY } from './pacman_buffers';
 export interface PacmanModel {
   topology: number[];
   weights: number[];
-  meta?: { generation?: number; eval?: number; score?: number };
+  meta?: { generation?: number; eval?: number; score?: number; level?: number };
 }
 
 const STORAGE_KEY = 'eanns:best:pacman';
@@ -52,14 +52,14 @@ export function loadPacmanTestModel(): Float64Array | null {
   }
 }
 
-export function autosavePacmanBest(weights: Float64Array, generation: number, eval_: number, score: number): void {
+export function autosavePacmanBest(weights: Float64Array, generation: number, eval_: number, score: number, level: number): void {
   const saved = loadSavedPacmanBest();
   if (saved && saved.eval > eval_) return;
-  const model: PacmanModel = { topology: [...PACMAN_TOPOLOGY], weights: [...weights], meta: { generation, eval: eval_, score } };
+  const model: PacmanModel = { topology: [...PACMAN_TOPOLOGY], weights: [...weights], meta: { generation, eval: eval_, score, level } };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(model));
 }
 
-export function loadSavedPacmanBest(): { weights: Float64Array; generation: number; eval: number; score: number } | null {
+export function loadSavedPacmanBest(): { weights: Float64Array; generation: number; eval: number; score: number; level: number } | null {
   const text = localStorage.getItem(STORAGE_KEY);
   if (!text) return null;
   try {
@@ -69,6 +69,7 @@ export function loadSavedPacmanBest(): { weights: Float64Array; generation: numb
       generation: model.meta?.generation ?? 0,
       eval: model.meta?.eval ?? 0,
       score: model.meta?.score ?? 0,
+      level: model.meta?.level ?? 1,
     };
   } catch {
     return null;
