@@ -240,12 +240,15 @@ export class NetworkPanel {
       ctx.fillText(labels[i], xs[outLayer] + 22 * dpr, ys[outLayer][i]);
     }
 
-    ctx.font = `${13 * textScale * dpr}px "JetBrains Mono", monospace`;
+    // Weight-sign key, centred either side of the midline. The two labels sit far
+    // enough apart to read as separate items rather than one run-on string.
+    ctx.font = `${11 * textScale * dpr}px "JetBrains Mono", monospace`;
     ctx.textAlign = 'center';
+    const keyY = height - 58 * dpr;
     ctx.fillStyle = '#ff3030';
-    ctx.fillText('RED < 0', px(0.43), height - 58 * dpr);
+    ctx.fillText('RED < 0', px(0.38), keyY);
     ctx.fillStyle = '#102cff';
-    ctx.fillText('BLUE > 0', px(0.57), height - 58 * dpr);
+    ctx.fillText('BLUE > 0', px(0.62), keyY);
     ctx.restore();
   }
 }

@@ -428,13 +428,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         logits[m] = sum;
         maxLogit = max(maxLogit, sum);
       }
-      // Sampling, not argmax: 引入随机性有助于探索 (§2.2). Temperature sets how
-      // much: the raw logit scale is bounded by the weight range, so without it
-      // the policy is stuck near-uniform and wanders regardless of what it wants.
-      // The replay/test agent always takes the mode so what you watch is stable.
+      // Sampling, not argmax: randomness aids exploration (§2.2). Temperature
+      // sets how much. Every agent uses the same setting, replay included: this
+      // policy leans on noise to break out of loops, so an argmax version of the
+      // same genome is a genuinely different and much weaker controller.
       var rngState = nextRand(bitcast<u32>(agents[b + A_RNG]));
       agents[b + A_RNG] = bitcast<f32>(rngState);
-      if (params.actionTemperature <= 0.0 || i >= params.trainCount) {
+      if (params.actionTemperature <= 0.0) {
         var bestLogit = -1e30;
         for (var m = 0u; m < 4u; m++) {
           if (logits[m] > bestLogit) { bestLogit = logits[m]; desired = m; }

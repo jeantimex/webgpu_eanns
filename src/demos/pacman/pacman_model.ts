@@ -52,14 +52,23 @@ export function loadPacmanTestModel(): Float64Array | null {
   }
 }
 
+/**
+ * Keep the better of the stored and the incoming model. The comparison is only
+ * meaningful when both were scored by the same fitness function, so the stored
+ * eval is ignored unless the saved model came from the current topology — a
+ * leftover from an older scale (the fitness has been rescaled more than once)
+ * would otherwise be unbeatable and silently freeze autosave forever.
+ */
 export function autosavePacmanBest(weights: Float64Array, generation: number, eval_: number, score: number, level: number): void {
   const saved = loadSavedPacmanBest();
-  if (saved && saved.eval > eval_) return;
+  if (saved && saved.comparable && saved.eval > eval_) return;
   const model: PacmanModel = { topology: [...PACMAN_TOPOLOGY], weights: [...weights], meta: { generation, eval: eval_, score, level } };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(model));
 }
 
-export function loadSavedPacmanBest(): { weights: Float64Array; generation: number; eval: number; score: number; level: number } | null {
+export function loadSavedPacmanBest():
+  | { weights: Float64Array; generation: number; eval: number; score: number; level: number; comparable: boolean }
+  | null {
   const text = localStorage.getItem(STORAGE_KEY);
   if (!text) return null;
   try {
@@ -70,6 +79,8 @@ export function loadSavedPacmanBest(): { weights: Float64Array; generation: numb
       eval: model.meta?.eval ?? 0,
       score: model.meta?.score ?? 0,
       level: model.meta?.level ?? 1,
+      // Only trust the stored eval when it was produced by this exact network.
+      comparable: JSON.stringify(model.topology) === JSON.stringify([...PACMAN_TOPOLOGY]),
     };
   } catch {
     return null;

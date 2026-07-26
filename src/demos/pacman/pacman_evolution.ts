@@ -85,6 +85,7 @@ export class PacmanEvolution {
   private playMode = false;
   private episodeSeed = 1;
   private shownIndex = -1;
+  private replaySeed = 1;
   private mutateRate = BASE_MUTATE_RATE;
   private stagnantGenerations = 0;
   private lastBestFitness = -Infinity;
@@ -198,7 +199,13 @@ export class PacmanEvolution {
     // mode so the pacman you watch behaves deterministically.
     new Uint32Array(data).set([this.buffers.totalAgents, this.populationSize, this.playMode ? 1 : 0, this.episodeSeed]);
     new Float32Array(data, 16).set([this.ghostSpeedScale, this.houseReleaseScale]);
-    new Float32Array(data, 24).set([this.playMode || this.populationSize === 1 ? 0 : this.actionTemperature]);
+    // Every network-driven agent samples at the same temperature it was evolved
+    // under, including the replay/Test slot. Forcing the replay to argmax makes
+    // the pacman you watch (and the model you export) a *different, far worse*
+    // policy than the one selection actually scored — measured at 10 pellets
+    // versus 187 for the very same genome. The human player's agent never runs
+    // the network at all, so play mode needs no special case.
+    new Float32Array(data, 24).set([this.actionTemperature]);
     new Uint32Array(data, 28).set([Math.round(this.levelSeconds * 60)]);
     this.device.queue.writeBuffer(this.buffers.params, 0, new Uint8Array(data));
   }
@@ -236,8 +243,14 @@ export class PacmanEvolution {
     this.device.queue.writeBuffer(this.buffers.genomes, 0, flat);
   }
 
+  /**
+   * Re-seeded on every restart. Actions are sampled, so a fixed seed would make
+   * the agent replay one canned episode forever — you would never see the range
+   * of behaviour the policy actually has.
+   */
   private resetAgent(index: number): void {
-    this.device.queue.writeBuffer(this.buffers.agents, index * AGENT_FLOATS * 4, initialAgentStates(1));
+    this.replaySeed = (this.replaySeed + 1) >>> 0;
+    this.device.queue.writeBuffer(this.buffers.agents, index * AGENT_FLOATS * 4, initialAgentStates(1, this.replaySeed));
   }
 
   /** Dispatch k per-frame game ticks (60 Hz each). */
