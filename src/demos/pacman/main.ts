@@ -128,6 +128,9 @@ async function main(): Promise<void> {
         showError(err);
       }
     },
+  }, {
+    // Debug overlays for the perception vector the network actually sees.
+    toggles: [{ label: 'Ghost BFS path', onChange: (on: boolean) => renderer.setShowGhostPath(on) }],
   });
 
   // Fixed 60 Hz sim ticks (the source engine's logic rate) x sim speed.

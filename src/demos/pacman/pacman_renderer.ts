@@ -1,5 +1,5 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
-import { WORLD_H, WORLD_W } from './maze';
+import { COLS, mazeGraph, UNREACHABLE, WORLD_H, WORLD_W } from './maze';
 import { AGENT_FLOATS, type PacmanBuffers } from './pacman_buffers';
 
 // Atlas layout (single texture, sprites in row 0, maze at y=16):
@@ -30,6 +30,10 @@ const SPRITES: Array<{ name: string; x: number }> = [
   { name: 'cherry', x: 960 },
 ];
 
+const graph = mazeGraph();
+/** Longest possible path, so the overlay never truncates. */
+const GHOST_PATH_INSTANCES = graph.diameter + 1;
+
 const shader = /* wgsl */ `
 struct Uniforms {
   scaleX: f32,
@@ -38,8 +42,8 @@ struct Uniforms {
   offsetY: f32,
   bestIndex: u32,
   animTime: f32,
+  debugFlags: u32, // bit 0: draw the BFS path to the nearest ghost
   pad0: f32,
-  pad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> uni: Uniforms;
@@ -47,11 +51,16 @@ struct Uniforms {
 @group(0) @binding(2) var atlas: texture_2d<f32>;
 @group(0) @binding(3) var<storage, read> agents: array<f32>;
 @group(0) @binding(4) var<storage, read> pelletList: array<u32>; // c, r, power, pad per pellet
+@group(0) @binding(5) var<storage, read> tileIndex: array<i32>; // tile -> walkable index
+@group(0) @binding(6) var<storage, read> pathDist: array<u32>; // all-pairs maze steps, u8 x4
 
 const AGENT_FLOATS = ${AGENT_FLOATS}u;
 const A_LEVEL = 8u;
 const A_GHOSTS = 17u;
 const A_PELLETS = 36u;
+const WALK_STRIDE = ${graph.stride}u;
+const UNREACHABLE = ${UNREACHABLE}.0;
+const DEBUG_GHOST_PATH = 1u;
 
 const QUAD = array<vec2f, 6>(
   vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
@@ -174,6 +183,92 @@ fn vsFruit(@builtin(vertex_index) vi: u32) -> VertexOutput {
   return texOut(QUAD[vi], charTopLeft(13.5, 17.0), vec2f(960.0, 0.0));
 }
 
+fn dbgDir(d: u32) -> vec2i {
+  switch d {
+    case 0u: { return vec2i(0, -1); }
+    case 1u: { return vec2i(0, 1); }
+    case 2u: { return vec2i(-1, 0); }
+    default: { return vec2i(1, 0); }
+  }
+}
+
+/** Row-14 tunnel wrap, matching warpX in the sim. */
+fn wrapCol(c: i32, r: i32) -> i32 {
+  if (r == 14) {
+    if (c < 0) { return ${COLS - 1}; }
+    if (c > ${COLS - 1}) { return 0; }
+  }
+  return c;
+}
+
+fn walkIndex(c: i32, r: i32) -> i32 {
+  if (r < 0 || r > 30) { return -1; }
+  let cc = wrapCol(c, r);
+  if (cc < 0 || cc > ${COLS - 1}) { return -1; }
+  return tileIndex[u32(r) * ${COLS}u + u32(cc)];
+}
+
+fn pathSteps(a: i32, b: i32) -> f32 {
+  if (a < 0 || b < 0) { return UNREACHABLE; }
+  let offset = u32(a) * WALK_STRIDE + u32(b);
+  return f32((pathDist[offset >> 2u] >> ((offset & 3u) * 8u)) & 0xffu);
+}
+
+/**
+ * Debug overlay for the ghostDist / ghostDir network inputs: one quad per tile
+ * of the true shortest path from pacman to the nearest ghost on the board.
+ * Instance ii is the tile ii steps along that path, so the number of quads
+ * drawn *is* the BFS distance the network sees, and the first quad shows which
+ * neighbour ghostDir points at.
+ */
+@vertex
+fn vsGhostPath(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VertexOutput {
+  if ((uni.debugFlags & DEBUG_GHOST_PATH) == 0u) { return deadOut(); }
+  let base = uni.bestIndex * AGENT_FLOATS;
+
+  var curC = i32(round(agents[base]));
+  var curR = i32(round(agents[base + 1u]));
+  let pacTile = walkIndex(curC, curR);
+  if (pacTile < 0) { return deadOut(); }
+
+  // Nearest ghost that is actually on the board (skip eyes and housebound).
+  var bestD = UNREACHABLE;
+  var ghostTile = -1;
+  for (var g = 0u; g < 4u; g++) {
+    let gb = base + A_GHOSTS + g * 4u;
+    let mode = agents[gb + 3u];
+    if (mode != 0.0 && mode != 1.0) { continue; }
+    let gt = walkIndex(i32(round(agents[gb])), i32(round(agents[gb + 1u])));
+    let d = pathSteps(pacTile, gt);
+    if (d < bestD) { bestD = d; ghostTile = gt; }
+  }
+  if (ghostTile < 0 || bestD >= UNREACHABLE || f32(ii) > bestD) { return deadOut(); }
+
+  // Descend the distance field ii times: each step must drop the remaining
+  // distance by exactly 1, which is what makes this the shortest path.
+  for (var s = 0u; s < ii; s++) {
+    let dHere = pathSteps(walkIndex(curC, curR), ghostTile);
+    for (var d = 0u; d < 4u; d++) {
+      let dv = dbgDir(d);
+      let nr = curR + dv.y;
+      let nc = wrapCol(curC + dv.x, nr);
+      let nt = walkIndex(nc, nr);
+      if (nt < 0) { continue; }
+      if (pathSteps(nt, ghostTile) == dHere - 1.0) { curC = nc; curR = nr; break; }
+    }
+  }
+
+  // Yellow at pacman fading to red at the ghost, so direction reads at a glance.
+  let t = select(f32(ii) / bestD, 0.0, bestD <= 0.0);
+  let size = 5.0;
+  let topLeft = vec2f(f32(curC) * 8.0 + 4.0 - size * 0.5, f32(curR) * 8.0 + 4.0 - size * 0.5);
+  var output: VertexOutput;
+  output.position = toNdc(topLeft + QUAD[vi] * size);
+  output.uv = vec2f(0.0, 0.0);
+  output.color = vec4f(1.0, 0.85 - 0.85 * t, 0.1, 0.75);
+  return output;
+}
+
 @fragment
 fn fragmentTex(input: VertexOutput) -> @location(0) vec4f {
   let tex = textureSample(atlas, smp, input.uv);
@@ -219,10 +314,11 @@ export class PacmanRenderer {
   private readonly device: GPUDevice;
   private readonly context: GPUCanvasContext;
   private readonly uniformBuffer: GPUBuffer;
-  private readonly pipelines: Record<'maze' | 'pellet' | 'ghost' | 'pac' | 'fruit', GPURenderPipeline>;
+  private readonly pipelines: Record<'maze' | 'pellet' | 'ghost' | 'pac' | 'fruit' | 'ghostPath', GPURenderPipeline>;
   private readonly bindGroup: GPUBindGroup;
   private readonly pelletCount: number;
   private bestIndex = 0;
+  private showGhostPath = false;
 
   private constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -248,6 +344,8 @@ export class PacmanRenderer {
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
         { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 6, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
       ],
     });
     const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: [layout] });
@@ -277,6 +375,7 @@ export class PacmanRenderer {
       ghost: makePipeline('vsGhost'),
       pac: makePipeline('vsPac'),
       fruit: makePipeline('vsFruit'),
+      ghostPath: makePipeline('vsGhostPath', 'fragmentSolid'),
     };
 
     this.bindGroup = this.device.createBindGroup({
@@ -287,6 +386,8 @@ export class PacmanRenderer {
         { binding: 2, resource: atlas.createView() },
         { binding: 3, resource: { buffer: buffers.agents } },
         { binding: 4, resource: { buffer: buffers.pelletList } },
+        { binding: 5, resource: { buffer: buffers.tileIndex } },
+        { binding: 6, resource: { buffer: buffers.pathDist } },
       ],
     });
 
@@ -299,6 +400,11 @@ export class PacmanRenderer {
 
   setBestIndex(idx: number): void {
     this.bestIndex = idx;
+  }
+
+  /** Debug overlay: trace the BFS shortest path to the nearest ghost. */
+  setShowGhostPath(show: boolean): void {
+    this.showGhostPath = show;
   }
 
   render(animTime: number): void {
@@ -319,6 +425,7 @@ export class PacmanRenderer {
     ]);
     new Uint32Array(data)[4] = this.bestIndex;
     new Float32Array(data)[5] = animTime;
+    new Uint32Array(data)[6] = this.showGhostPath ? 1 : 0;
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);
 
     const encoder = this.device.createCommandEncoder({ label: 'pacman frame' });
@@ -334,6 +441,8 @@ export class PacmanRenderer {
     pass.setBindGroup(0, this.bindGroup);
     pass.setPipeline(this.pipelines.maze);
     pass.draw(6);
+    pass.setPipeline(this.pipelines.ghostPath);
+    pass.draw(6, GHOST_PATH_INSTANCES);
     pass.setPipeline(this.pipelines.pellet);
     pass.draw(6, this.pelletCount);
     pass.setPipeline(this.pipelines.ghost);

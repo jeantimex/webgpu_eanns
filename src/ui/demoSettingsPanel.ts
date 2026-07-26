@@ -6,11 +6,20 @@ export interface DemoSettingsActions {
   onLoadModelFile(file: File): void;
 }
 
+/** A checkbox a demo adds for itself, e.g. a debug overlay switch. */
+export interface DemoSettingsToggle {
+  label: string;
+  initial?: boolean;
+  onChange: (enabled: boolean) => void;
+}
+
 export interface DemoSettingsOptions {
   tracks?: readonly string[];
   showFps?: boolean;
   initialShowFps?: boolean;
   onFpsChange?: (visible: boolean) => void;
+  /** Demo-specific switches, rendered under the shared fields. */
+  toggles?: readonly DemoSettingsToggle[];
 }
 
 export interface DemoSettingsControls {
@@ -152,6 +161,17 @@ export function createDemoSettingsPanel(
     const fpsField = field('Show FPS', showFps);
     fpsField.classList.add('snake-settings-check');
     fields.push(fpsField);
+  }
+
+  for (const toggle of options.toggles ?? []) {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = toggle.initial ?? false;
+    box.addEventListener('change', () => toggle.onChange(box.checked));
+    const toggleField = field(toggle.label, box);
+    toggleField.classList.add('snake-settings-check');
+    fields.push(toggleField);
+    toggle.onChange(box.checked);
   }
 
   const buttons = document.createElement('div');
