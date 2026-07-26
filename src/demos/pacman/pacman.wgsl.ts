@@ -35,7 +35,7 @@ const graph = mazeGraph();
 export const pacmanShader = /* wgsl */ `
 struct SimParams {
   agentCount: u32,
-  trainCount: u32,
+  episodes: u32, // agents per genome; agent i runs genome i / episodes
   playMode: u32,
   rngSeed: u32,
   // §5.1 environment jitter: re-rolled每generation so strategies must generalise
@@ -408,7 +408,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       inputs[10] = (244.0 - agents[b + A_DOTS]) / 244.0;
 
       // Forward pass [8 -> 6 ReLU -> 4], then softmax, then sample.
-      let gBase = i * GENOME_SIZE;
+      let gBase = (i / params.episodes) * GENOME_SIZE;
       var hidden: array<f32, HIDDEN>;
       for (var h = 0u; h < HIDDEN; h++) {
         var sum = genomes[gBase + INPUTS * HIDDEN + h]; // bias row

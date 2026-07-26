@@ -1,9 +1,11 @@
+import { aggregateEpisodes, episodeSpread } from '../../utils/evaluation';
 import { nextTournamentGeneration } from '../../utils/ga';
 import { mulberry32, type Rng } from '../../utils/rng';
 import {
   A,
   AGENT_FLOATS,
   createPacmanBuffers,
+  EPISODES_PER_GENOME,
   FIT_PELLET_PCT_W,
   FIT_SCORE_NORM,
   FIT_SCORE_W,
@@ -74,7 +76,10 @@ export class PacmanEvolution {
   private readonly workgroups: number;
   private readonly rng: Rng;
   private genomes: Float64Array[];
-  private readonly displayIndex: number;
+  /** Genome slot holding the best-so-far replay genome. */
+  private readonly displayGenomeIndex: number;
+  /** Agent slot that replay genome runs in (the trailing agent). */
+  private readonly displayAgentIndex: number;
   private bestGenome: Float64Array;
   private bestFitness = -Infinity;
   private bestScore = 0;
@@ -86,6 +91,7 @@ export class PacmanEvolution {
   private episodeSeed = 1;
   private shownIndex = -1;
   private replaySeed = 1;
+  private lastSpread = 0;
   private mutateRate = BASE_MUTATE_RATE;
   private stagnantGenerations = 0;
   private lastBestFitness = -Infinity;
@@ -99,14 +105,16 @@ export class PacmanEvolution {
     readonly buffers: PacmanBuffers,
     readonly populationSize: number,
     seed: number,
+    readonly episodes: number,
   ) {
     this.rng = mulberry32(seed);
-    this.displayIndex = populationSize;
-    this.genomes = Array.from({ length: buffers.totalAgents }, () => randomNetwork(this.rng));
+    this.displayGenomeIndex = populationSize;
+    this.displayAgentIndex = populationSize * episodes;
+    this.genomes = Array.from({ length: populationSize + 1 }, () => randomNetwork(this.rng));
     this.bestGenome = new Float64Array(this.genomes[0]);
-    this.genomes[this.displayIndex].set(this.bestGenome);
+    this.genomes[this.displayGenomeIndex].set(this.bestGenome);
     this.uploadGenomes();
-    this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents));
+    this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents, this.episodeSeed, this.episodes));
 
     this.pipeline = device.createComputePipeline({
       label: 'pacman pipeline',
@@ -128,24 +136,30 @@ export class PacmanEvolution {
     this.workgroups = Math.ceil(this.buffers.totalAgents / 64);
   }
 
-  static init(device: GPUDevice, populationSize = 300, seed = 1): PacmanEvolution {
-    return new PacmanEvolution(device, createPacmanBuffers(device, populationSize), populationSize, seed);
+  static init(device: GPUDevice, populationSize = 300, seed = 1, episodes = EPISODES_PER_GENOME): PacmanEvolution {
+    const eps = Math.max(1, Math.floor(episodes));
+    return new PacmanEvolution(device, createPacmanBuffers(device, populationSize, eps), populationSize, seed, eps);
   }
 
   static readonly topology = PACMAN_TOPOLOGY;
 
-  /** CPU-side genome of agent `index`, uploaded to the GPU each generation. */
-  genomeAt(index: number): Float64Array {
-    return this.genomes[index];
+  /** The genome driving a given *agent* slot (episodes of one genome are adjacent). */
+  genomeAt(agentIndex: number): Float64Array {
+    return this.genomes[Math.min(this.populationSize, Math.floor(agentIndex / this.episodes))];
   }
 
   displayGenome(): Float64Array {
-    return this.genomes[this.displayIndex];
+    return this.genomes[this.displayGenomeIndex];
   }
 
   /** Live GA state for the HUD: the adaptive mutation rate and its stall counter. */
-  gaState(): { mutateRate: number; stagnant: number } {
-    return { mutateRate: this.mutateRate, stagnant: this.stagnantGenerations };
+  gaState(): { mutateRate: number; stagnant: number; episodes: number; spread: number } {
+    return {
+      mutateRate: this.mutateRate,
+      stagnant: this.stagnantGenerations,
+      episodes: this.episodes,
+      spread: this.lastSpread,
+    };
   }
 
   bestMeta(): { generation: number; eval: number; score: number; level: number } {
@@ -159,14 +173,14 @@ export class PacmanEvolution {
 
   injectBest(weights: Float64Array, eval_ = 0, score = 0, generation = this.generation, level = 1): void {
     this.genomes[0] = weights.slice();
-    this.genomes[this.displayIndex] = weights.slice();
+    this.genomes[this.displayGenomeIndex] = weights.slice();
     this.bestGenome = weights.slice();
     this.bestFitness = eval_;
     this.bestScore = score;
     this.bestLevel = level;
     this.bestGeneration = generation;
     this.uploadGenomes();
-    this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents));
+    this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents, this.episodeSeed, this.episodes));
   }
 
   setPlayMode(playMode: boolean): void {
@@ -197,7 +211,7 @@ export class PacmanEvolution {
     const data = new ArrayBuffer(32);
     // Training agents sample from the softmax; the replay/test slot takes the
     // mode so the pacman you watch behaves deterministically.
-    new Uint32Array(data).set([this.buffers.totalAgents, this.populationSize, this.playMode ? 1 : 0, this.episodeSeed]);
+    new Uint32Array(data).set([this.buffers.totalAgents, this.episodes, this.playMode ? 1 : 0, this.episodeSeed]);
     new Float32Array(data, 16).set([this.ghostSpeedScale, this.houseReleaseScale]);
     // Every network-driven agent samples at the same temperature it was evolved
     // under, including the replay/Test slot. Forcing the replay to argmax makes
@@ -221,13 +235,13 @@ export class PacmanEvolution {
   }
 
   setPlayerDesiredDir(dir: number): void {
-    const o = this.displayIndex * AGENT_FLOATS;
+    const o = this.displayAgentIndex * AGENT_FLOATS;
     const data = new Float32Array([dir]);
     this.device.queue.writeBuffer(this.buffers.agents, (o + A.desired) * 4, data);
   }
 
   resetDisplayAgent(): void {
-    this.resetAgent(this.displayIndex);
+    this.resetAgent(this.displayAgentIndex);
   }
 
   async restartTestAgentIfDead(): Promise<void> {
@@ -287,11 +301,12 @@ export class PacmanEvolution {
     this.isEvolving = true;
     try {
       const states = await this.readStates();
-      if (states[this.displayIndex * AGENT_FLOATS + A.gameOver] > 0.5) {
-        this.resetAgent(this.displayIndex);
+      if (states[this.displayAgentIndex * AGENT_FLOATS + A.gameOver] > 0.5) {
+        this.resetAgent(this.displayAgentIndex);
       }
+      const trainingAgents = this.populationSize * this.episodes;
       let aliveCount = 0;
-      for (let i = 0; i < this.populationSize; i++) {
+      for (let i = 0; i < trainingAgents; i++) {
         if (states[i * AGENT_FLOATS + A.gameOver] < 0.5) aliveCount++;
       }
       if (aliveCount > 0) return;
@@ -300,10 +315,14 @@ export class PacmanEvolution {
       // `fitness = score`, and evolution immediately found the local optimum of
       // standing still: score 0, but never caught. Four terms fix it, and the
       // relative weights carry the lesson — survival is weighted *lowest* (0.1)
-      // because 单纯生存不能给太高权重，否则又会催生"躲藏策略", while the
-      // percentage of pellets eaten is the 核心驱动力 at 2.0.
-      const fitnesses = new Float64Array(this.populationSize);
-      for (let i = 0; i < this.populationSize; i++) {
+      // because weighting it heavily breeds hiding strategies, while the
+      // percentage of pellets eaten is the core driving force at 2.0.
+      //
+      // Scored per *episode*; genomes are then judged on the aggregate, because
+      // one episode of a sampled policy is closer to a lottery ticket than a
+      // measurement. See src/utils/evaluation.ts.
+      const episodeScores = new Float64Array(trainingAgents);
+      for (let i = 0; i < trainingAgents; i++) {
         const o = i * AGENT_FLOATS;
         const score = states[o + A.score];
         const level = states[o + A.level];
@@ -318,35 +337,47 @@ export class PacmanEvolution {
         // No clamp to a positive floor: tournament selection only ever compares
         // fitnesses, so negatives are fine — and clamping would flatten the
         // whole of generation 1 to a single value and blind the tournament.
-        const composite =
+        episodeScores[i] =
           scorePct * FIT_SCORE_W +
           survivalPct * FIT_SURVIVAL_W +
           pelletPct * FIT_PELLET_PCT_W -
           wastedPct * FIT_WASTED_W;
         this.bestLevel = Math.max(this.bestLevel, level);
-        fitnesses[i] = composite;
-        if (fitnesses[i] > this.bestFitness) {
-          this.bestFitness = fitnesses[i];
-          this.bestScore = score;
-          this.bestLevel = level;
-          this.bestGeneration = this.generation;
-          this.bestGenome = new Float64Array(this.genomes[i]);
-          this.genomes[this.displayIndex].set(this.bestGenome);
-          autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore, this.bestLevel);
-        }
       }
 
-      // §3.3's adaptive mutation: 当连续5代最佳适应度没有显著提升时，轻微提高变异率.
-      // Raising it is how the population climbs out of the §4.4 plateau, where
-      // novel individuals otherwise get culled before they can pay off.
+      const fitnesses = aggregateEpisodes(episodeScores, this.populationSize, this.episodes);
+      this.lastSpread = episodeSpread(episodeScores, this.populationSize, this.episodes).meanRange;
+
+      // The recorded best is now the best *aggregate*, not the luckiest single
+      // run, so an exported model replays close to the score it was saved with.
+      for (let g = 0; g < this.populationSize; g++) {
+        if (fitnesses[g] <= this.bestFitness) continue;
+        this.bestFitness = fitnesses[g];
+        // Report the median episode of that genome rather than its best, so the
+        // headline score is one it can actually reproduce.
+        const runs = Array.from({ length: this.episodes }, (_, e) => g * this.episodes + e)
+          .sort((a, b) => episodeScores[a] - episodeScores[b]);
+        const typical = runs[runs.length >> 1] * AGENT_FLOATS;
+        this.bestScore = states[typical + A.score];
+        this.bestLevel = states[typical + A.level];
+        this.bestGeneration = this.generation;
+        this.bestGenome = new Float64Array(this.genomes[g]);
+        this.genomes[this.displayGenomeIndex].set(this.bestGenome);
+        autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore, this.bestLevel);
+      }
+
+      // §3.3's adaptive mutation: nudge the rate up after several generations
+      // with no improvement in the best fitness. Raising it is how the
+      // population climbs out of the §4.4 plateau, where novel individuals
+      // otherwise get culled before they can pay off.
       let generationBest = -Infinity;
-      for (let i = 0; i < this.populationSize; i++) generationBest = Math.max(generationBest, fitnesses[i]);
+      for (let g = 0; g < this.populationSize; g++) generationBest = Math.max(generationBest, fitnesses[g]);
       if (generationBest > this.lastBestFitness) {
         this.lastBestFitness = generationBest;
         this.stagnantGenerations = 0;
-        // Decay back down as progress resumes — §3.3 wants a *lower* rate late on
-        // (降低变异率，进行精细优化). Ratcheting up and staying there turns the GA
-        // into random search and the population actively gets worse.
+        // Decay back down as progress resumes — §3.3 wants a *lower* rate late
+        // on, for fine optimisation. Ratcheting up and staying there turns the
+        // GA into random search and the population actively gets worse.
         this.mutateRate = Math.max(BASE_MUTATE_RATE, this.mutateRate - MUTATE_STEP);
       } else if (++this.stagnantGenerations >= STAGNATION_LIMIT) {
         this.stagnantGenerations = 0;
@@ -372,7 +403,7 @@ export class PacmanEvolution {
       this.rerollEnvironment();
       this.writeParams();
       this.uploadGenomes();
-      this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents, this.episodeSeed));
+      this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents, this.episodeSeed, this.episodes));
     } finally {
       this.isEvolving = false;
     }
@@ -382,11 +413,12 @@ export class PacmanEvolution {
   async readBestAgentState(): Promise<BestAgentSnapshot> {
     const states = await this.readStates();
     let aliveCount = 0;
-    let shown = this.displayIndex;
+    let shown = this.displayAgentIndex;
     let bestDotsLeft = Infinity;
     let bestScore = -Infinity;
     let bestTicks = Infinity;
-    for (let i = 0; i < this.populationSize; i++) {
+    const trainingAgents = this.populationSize * this.episodes;
+    for (let i = 0; i < trainingAgents; i++) {
       const o = i * AGENT_FLOATS;
       if (states[o + A.gameOver] < 0.5) {
         aliveCount++;
@@ -403,12 +435,12 @@ export class PacmanEvolution {
         }
       }
     }
-    if (!this.playMode && this.populationSize === 1) shown = 0;
+    if (!this.playMode && trainingAgents === 1) shown = 0;
     // Stick with whoever is on screen while they are still alive and still the
     // leader by dot count. Re-picking a strictly-better agent every frame makes
     // the camera jump between two pacmen mid-corridor, which reads as jitter
     // even though each individual agent is moving smoothly.
-    if (!this.playMode && this.shownIndex >= 0 && this.shownIndex < this.populationSize) {
+    if (!this.playMode && this.shownIndex >= 0 && this.shownIndex < trainingAgents) {
       const prev = this.shownIndex * AGENT_FLOATS;
       if (states[prev + A.gameOver] < 0.5 && states[prev + A.dotsLeft] <= bestDotsLeft + DISPLAY_STICKINESS) {
         shown = this.shownIndex;

@@ -45,7 +45,8 @@ algorithms, with two deliberate departures that are documented and measured belo
 | Mutation | 50% reset / 50% gaussian drift, rate 0.05 adaptive |
 | Elitism | top 2% copied unchanged |
 | Agent state | 66 floats (264 bytes) per agent |
-| Population | configurable, default 300 |
+| Population | configurable, default 300 genomes |
+| Evaluation | 6 episodes per genome, mean, common random numbers |
 
 One compute dispatch advances every agent by one 60 Hz game tick. A generation
 runs until every agent's game has ended, then the GA step happens on the CPU.
@@ -586,11 +587,13 @@ resets agent state for the next generation, so reading after it yields all zeros
 
 ## 16. Known limits and next steps
 
-**Fitness is a single sampled episode.** With stochastic actions, the same genome
+**Fitness estimation is noisy.** With stochastic actions, the same genome
 scores very differently run to run — `best` swings between 242 and 459 across
 adjacent generations, and a saved best replays with a 4× spread (§13). Tournament
-selection on a noisy signal selects partly on luck, and it is why a saved best
-replays worse than its recorded score. Fixing it is item 0 of §17.
+selection on a noisy signal selects partly on luck. **Largely addressed** — see
+§17 item 0 — by scoring each genome over 6 episodes with common random numbers.
+A residual upward bias remains, because the recorded best is still a maximum over
+noisy estimates.
 
 **One life.** `START_LIVES = 0` ends the run at first contact, around 21 s in, so
 agents rarely see a late board and get little gradient toward *finishing* one.
@@ -618,20 +621,49 @@ sampling, §2.3 step cap, §3.1 composite fitness, §3.2 tournament k=3, §3.3
 crossover/mutation/adaptive rate, §3.4 elitism 2%, §5.1 population size, §5.1 ghost
 behaviour jitter, §6.3 visualisation.
 
-### Item 0 — not in the writeup, but our largest measured problem
+### Item 0 — DONE: multi-episode fitness
 
-**Average fitness over several episodes.** Fitness is currently a single sampled
-episode. Replaying one identical genome ten times gives 44 to 179 pellets — a **4×
-spread** (§13). Tournament selection on that is partly selecting luck, and it is why
-the autosaved "best" is the luckiest run rather than the best policy.
+*Not from the writeup — it was our largest measured problem.*
 
-Scoring each genome over 2–3 episodes and selecting on the mean would improve
-selection quality *and* make exported models honest about their own scores. The
-writeup never discusses evaluation variance — it samples actions too, but only
-reports end-state behaviour — so this is ours to fix. **I would do this first.**
+Fitness used to be a single sampled episode, so replaying one identical genome
+ten times gave 44 to 179 pellets. Selection over that is selecting luck, and the
+autosaved "best" was the luckiest run rather than the best policy.
 
-Note that it rescales fitness without changing topology, which is exactly the case
-the `comparable` guard in §13 exists to survive.
+Each genome is now scored over `EPISODES_PER_GENOME` episodes and selected on the
+mean. On the GPU this is close to free — episodes are extra *threads in the same
+dispatch*, not extra dispatches, so 300 genomes x 6 episodes is 1800 agents at
+unchanged wall-clock.
+
+Two details that matter more than the averaging itself:
+
+- **Common random numbers.** Episode `e` uses the same seed for *every* genome in
+  a generation, so when two genomes are compared the shared luck cancels instead
+  of adding noise to the comparison. Costs nothing, and reduces selection error
+  considerably more than averaging independent episodes does.
+- **The recorded score is the genome's *median* episode**, not its best, so an
+  exported model advertises a number it can actually reproduce.
+
+Measured at generation 40, population 300:
+
+| Episodes | Agents | Avg pellets @ gen 40 | Best episode | Recorded vs replayed |
+|---|---|---|---|---|
+| 1 | 300 | 54.6 | 231 | 8.7x off |
+| 3 | 900 | 64.5 | 462 | 6.5x off |
+| **6** | **1800** | **93.7** | **717** | **4.0x off** |
+
+Monotonic on every axis, so `EPISODES_PER_GENOME` is now **6**. Raising it further
+is cheap if wanted; the error of a mean falls as 1/sqrt(episodes), so the returns
+diminish.
+
+**A residual caveat.** The recorded best is still the *maximum over generations*
+of a noisy estimate, so it stays upward-biased — the winner's curse. More episodes
+shrink it (8.7x to 4.0x) but cannot remove it. If you need a model's honest
+number, replay it a few times rather than trusting the headline.
+
+The shared machinery lives in `src/utils/evaluation.ts` (`episodeSeed`,
+`aggregateEpisodes`, `episodeSpread`), not in the pacman demo. Snake drives its
+apple spawns from a per-agent RNG and so has exactly the same noisy-fitness
+problem, currently unmeasured.
 
 ### Tier 1 — aimed at the stall deaths that dominate our failure mode
 
@@ -660,6 +692,6 @@ the `comparable` guard in §13 exists to survive.
 
 ### Suggested order
 
-**Item 0 → 1 → 2 → 5.** The first three all target the stall deaths that dominate
-our failure mode; item 5 is nearly free. Re-measure after each — every confident
+**Item 0 is done.** Next: **1 → 2 → 5.** The first two target the stall deaths that
+dominate our failure mode; item 5 is nearly free. Re-measure after each — every confident
 prediction in §10 was wrong, and each was settled by a two-minute headless A/B.

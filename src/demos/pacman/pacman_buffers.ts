@@ -1,4 +1,5 @@
 import { createBufferWithData } from '../../webgpu/utils';
+import { episodeSeed } from '../../utils/evaluation';
 import { mazeGraph, mazeWallBits, pelletMaskInit, pelletTiles } from './maze';
 
 /**
@@ -134,6 +135,15 @@ export const MAX_GAME_TICKS = 21600; // 6 min at 60 Hz, then the game ends
 export const LEVEL_SECS = 90; // default per-board time budget; adjustable at runtime
 export const LEVEL_SECS_MIN = 30;
 export const LEVEL_SECS_MAX = 180;
+/**
+ * Episodes each genome is scored over; see src/utils/evaluation.ts. Measured at
+ * generation 40, population 300: 1 episode gives 54.6 average pellets, 3 gives
+ * 64.5, 6 gives 93.7 — and the gap between a saved model's recorded score and
+ * what it actually replays narrows from 8.7x to 4.0x over the same range.
+ * Episodes are extra threads in the same dispatch, so 6 costs 1800 agent slots
+ * and no extra wall-clock.
+ */
+export const EPISODES_PER_GENOME = 6;
 export const STALL_SECS = 8; // no pellet for this long ends the game (anti standstill)
 export const FRUIT_SECS = 10; // cherry lifetime, spawns at 70 and 170 dots eaten (100 pts)
 
@@ -153,8 +163,16 @@ export interface PacmanBuffers {
   totalAgents: number;
 }
 
-/** All agents at the arcade start state (positions in the repo's tile coords). */
-export function initialAgentStates(count: number, seed = 1): Float32Array<ArrayBuffer> {
+/**
+ * All agents at the arcade start state (positions in the repo's tile coords).
+ *
+ * `episodes` follows the layout in src/utils/evaluation.ts: agent
+ * `genome * episodes + episode`. The RNG seed depends only on the *episode*
+ * index, never the genome, so every genome in a generation plays the same set of
+ * episodes (common random numbers) and comparisons between them are not
+ * contaminated by luck that only one of them happened to get.
+ */
+export function initialAgentStates(count: number, seed = 1, episodes = 1): Float32Array<ArrayBuffer> {
   const states = new Float32Array(count * AGENT_FLOATS);
   const asU32 = new Uint32Array(states.buffer);
   const pellets = pelletMaskInit();
@@ -168,8 +186,7 @@ export function initialAgentStates(count: number, seed = 1): Float32Array<ArrayB
     states[o + A.lives] = START_LIVES;
     states[o + A.dotsLeft] = 244;
     states[o + A.level] = 1;
-    // Each agent samples its own actions, so each needs its own stream.
-    asU32[o + A.rng] = (Math.imul(i + 1, 0x9e3779b9) ^ Math.imul(seed, 0x85ebca6b)) >>> 0 || 1;
+    asU32[o + A.rng] = episodeSeed(seed, i % episodes);
     // Ghosts: blinky outside heading left; pinky/inky/clyde idle in the house.
     const g = o + A.ghosts;
     states.set([13.5, 11, 2, 0], g); // blinky
@@ -181,19 +198,21 @@ export function initialAgentStates(count: number, seed = 1): Float32Array<ArrayB
   return states;
 }
 
-export function createPacmanBuffers(device: GPUDevice, populationSize: number): PacmanBuffers {
-  const totalAgents = populationSize + 1;
-  // SimParams uniform: agentCount, trainCount, playMode, rngSeed (u32) then the
+export function createPacmanBuffers(device: GPUDevice, populationSize: number, episodes = 1): PacmanBuffers {
+  // populationSize genomes x episodes, plus one trailing replay/display agent.
+  const totalAgents = populationSize * episodes + 1;
+  // SimParams uniform: agentCount, episodes, playMode, rngSeed (u32) then the
   // per-generation environment jitter of §5.1 as two f32; padded to 32 bytes.
   const paramsData = new ArrayBuffer(32);
-  new Uint32Array(paramsData).set([totalAgents, populationSize]);
+  new Uint32Array(paramsData).set([totalAgents, episodes]);
   new Float32Array(paramsData, 16).set([1, 1]);
   new Float32Array(paramsData, 24).set([1]);
   new Uint32Array(paramsData, 28).set([LEVEL_SECS * 60]);
 
+  // One genome per individual plus the display slot — episodes share a genome.
   const genomes = device.createBuffer({
     label: 'pacman genomes',
-    size: totalAgents * PACMAN_GENOME_SIZE * 4,
+    size: (populationSize + 1) * PACMAN_GENOME_SIZE * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
