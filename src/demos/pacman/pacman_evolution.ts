@@ -1,10 +1,16 @@
-import { nextCrossoverGeneration } from '../../utils/ga';
+import { nextTournamentGeneration } from '../../utils/ga';
 import { mulberry32, type Rng } from '../../utils/rng';
 import {
   A,
   AGENT_FLOATS,
   createPacmanBuffers,
+  FIT_PELLET_PCT_W,
+  FIT_SCORE_NORM,
+  FIT_SCORE_W,
+  FIT_SURVIVAL_W,
+  FIT_WASTED_W,
   initialAgentStates,
+  LEVEL_SECS,
   PACMAN_GENOME_SIZE,
   PACMAN_TOPOLOGY,
   type PacmanBuffers,
@@ -12,32 +18,24 @@ import {
 import { pacmanShader } from './pacman.wgsl';
 import { autosavePacmanBest } from './pacman_model';
 
-const WEIGHT_MIN = 1e-5;
-const WEIGHT_MAX = 20;
-function randomWeight(rng: Rng): number {
-  return WEIGHT_MIN + rng() * (WEIGHT_MAX - WEIGHT_MIN);
-}
+const INIT_RANGE = 1;
+/** Dots the on-screen agent may fall behind the leader before the view switches. */
+const DISPLAY_STICKINESS = 12;
 
-function randomVectorSeededNetwork(rng: Rng): Float64Array {
+// GA parameters from §3.2-3.4 of the writeup.
+const TOURNAMENT_K = 3;
+const ELITE_FRACTION = 0.02;
+const CROSSOVER_RATE = 0.8;
+const BASE_MUTATE_RATE = 0.05;
+/** §3.3's adaptive mechanism: nudge mutation up after this many flat generations. */
+const STAGNATION_LIMIT = 5;
+const MUTATE_STEP = 0.02;
+const MAX_MUTATE_RATE = 0.12;
+
+/** Generation 1 is pure noise — 完全随机, as the writeup's §3.2 starts. */
+function randomNetwork(rng: Rng): Float64Array {
   const genome = new Float64Array(PACMAN_GENOME_SIZE);
-  const dirs = [
-    [0, -1], // up
-    [1, 0], // right
-    [0, 1], // down
-    [-1, 0], // left
-  ] as const;
-
-  for (let mode = 0; mode < 2; mode++) {
-    for (let feature = 0; feature < 4; feature++) {
-      const w = randomWeight(rng);
-      const xInput = mode * 8 + feature * 2;
-      const yInput = xInput + 1;
-      for (let out = 0; out < 4; out++) {
-        genome[xInput * 4 + out] = w * dirs[out][0];
-        genome[yInput * 4 + out] = w * dirs[out][1];
-      }
-    }
-  }
+  for (let k = 0; k < PACMAN_GENOME_SIZE; k++) genome[k] = (rng() * 2 - 1) * INIT_RANGE;
   return genome;
 }
 
@@ -47,6 +45,7 @@ export interface BestAgentSnapshot {
   lives: number;
   dotsLeft: number;
   level: number;
+  levelTimeLeft: number;
   gameOver: boolean;
   aliveCount: number;
   bestScore: number;
@@ -77,6 +76,12 @@ export class PacmanEvolution {
   private isEvolving = false;
   private playMode = false;
   private episodeSeed = 1;
+  private shownIndex = -1;
+  private mutateRate = BASE_MUTATE_RATE;
+  private stagnantGenerations = 0;
+  private lastBestFitness = -Infinity;
+  private ghostSpeedScale = 1;
+  private houseReleaseScale = 1;
 
   private constructor(
     private readonly device: GPUDevice,
@@ -86,9 +91,7 @@ export class PacmanEvolution {
   ) {
     this.rng = mulberry32(seed);
     this.displayIndex = populationSize;
-    this.genomes = Array.from({ length: buffers.totalAgents }, () => {
-      return randomVectorSeededNetwork(this.rng);
-    });
+    this.genomes = Array.from({ length: buffers.totalAgents }, () => randomNetwork(this.rng));
     this.bestGenome = new Float64Array(this.genomes[0]);
     this.genomes[this.displayIndex].set(this.bestGenome);
     this.uploadGenomes();
@@ -107,6 +110,8 @@ export class PacmanEvolution {
         { binding: 2, resource: { buffer: buffers.agents } },
         { binding: 3, resource: { buffer: buffers.mazeBits } },
         { binding: 4, resource: { buffer: buffers.initPellets } },
+        { binding: 5, resource: { buffer: buffers.tileIndex } },
+        { binding: 6, resource: { buffer: buffers.pathDist } },
       ],
     });
     this.workgroups = Math.ceil(this.buffers.totalAgents / 64);
@@ -125,6 +130,11 @@ export class PacmanEvolution {
 
   displayGenome(): Float64Array {
     return this.genomes[this.displayIndex];
+  }
+
+  /** Live GA state for the HUD: the adaptive mutation rate and its stall counter. */
+  gaState(): { mutateRate: number; stagnant: number } {
+    return { mutateRate: this.mutateRate, stagnant: this.stagnantGenerations };
   }
 
   bestMeta(): { generation: number; eval: number; score: number; level: number } {
@@ -154,8 +164,23 @@ export class PacmanEvolution {
   }
 
   private writeParams(): void {
-    const paramsData = new Uint32Array([this.buffers.totalAgents, this.populationSize, this.playMode ? 1 : 0, this.episodeSeed]);
-    this.device.queue.writeBuffer(this.buffers.params, 0, paramsData);
+    const data = new ArrayBuffer(32);
+    // Training agents sample from the softmax; the replay/test slot takes the
+    // mode so the pacman you watch behaves deterministically.
+    new Uint32Array(data).set([this.buffers.totalAgents, this.populationSize, this.playMode ? 1 : 0, this.episodeSeed]);
+    new Float32Array(data, 16).set([this.ghostSpeedScale, this.houseReleaseScale]);
+    new Uint32Array(data, 24).set([this.playMode || this.populationSize === 1 ? 0 : 1, 0]);
+    this.device.queue.writeBuffer(this.buffers.params, 0, new Uint8Array(data));
+  }
+
+  /**
+   * §5.1: re-roll the environment every generation so the population cannot
+   * overfit one fixed ghost timing. Kept mild (±15%) — the point is variation,
+   * not a different game.
+   */
+  private rerollEnvironment(): void {
+    this.ghostSpeedScale = 0.85 + this.rng() * 0.3;
+    this.houseReleaseScale = 0.85 + this.rng() * 0.3;
   }
 
   setPlayerDesiredDir(dir: number): void {
@@ -228,21 +253,35 @@ export class PacmanEvolution {
       }
       if (aliveCount > 0) return;
 
-      // Clearing boards is the primary objective. Arcade score and shaping are
-      // tie-breakers, so GA consistently prefers eating one more pellet over
-      // surviving longer with a similar score.
+      // Composite fitness of §3.1. The writeup's first attempt was
+      // `fitness = score`, and evolution immediately found the local optimum of
+      // standing still: score 0, but never caught. Four terms fix it, and the
+      // relative weights carry the lesson — survival is weighted *lowest* (0.1)
+      // because 单纯生存不能给太高权重，否则又会催生"躲藏策略", while the
+      // percentage of pellets eaten is the 核心驱动力 at 2.0.
       const fitnesses = new Float64Array(this.populationSize);
       for (let i = 0; i < this.populationSize; i++) {
         const o = i * AGENT_FLOATS;
         const score = states[o + A.score];
         const level = states[o + A.level];
         const levelsCleared = Math.max(0, level - 1);
-        const pelletsEaten = levelsCleared * 244 + (244 - states[o + A.dotsLeft]);
-        const rewardDelta = states[o + A.totalReward] - score;
-        const pelletProgress = states[o + A.pelletProgress];
-        const shapedFitness = levelsCleared * 100_000 + pelletsEaten * 500 + score + Math.max(-1000, rewardDelta) + pelletProgress * 5;
+        const ticks = states[o + A.ticks];
+        // All four terms on a 0-100 scale, so the writeup's 1 : 0.1 : 2 ratios
+        // carry their intended meaning rather than being swamped by raw score.
+        const scorePct = (score / FIT_SCORE_NORM) * 100;
+        const survivalPct = (ticks / (LEVEL_SECS * 60)) * 100;
+        const pelletPct = ((levelsCleared * 244 + (244 - states[o + A.dotsLeft])) / 244) * 100;
+        const wastedPct = (states[o + A.wasted] / Math.max(1, ticks)) * 100;
+        // No clamp to a positive floor: tournament selection only ever compares
+        // fitnesses, so negatives are fine — and clamping would flatten the
+        // whole of generation 1 to a single value and blind the tournament.
+        const composite =
+          scorePct * FIT_SCORE_W +
+          survivalPct * FIT_SURVIVAL_W +
+          pelletPct * FIT_PELLET_PCT_W -
+          wastedPct * FIT_WASTED_W;
         this.bestLevel = Math.max(this.bestLevel, level);
-        fitnesses[i] = Math.max(1, shapedFitness);
+        fitnesses[i] = composite;
         if (fitnesses[i] > this.bestFitness) {
           this.bestFitness = fitnesses[i];
           this.bestScore = score;
@@ -253,19 +292,41 @@ export class PacmanEvolution {
           autosavePacmanBest(this.bestGenome, this.bestGeneration, this.bestFitness, this.bestScore, this.bestLevel);
         }
       }
-      const next = nextCrossoverGeneration(
-        this.genomes.slice(0, this.populationSize),
-        fitnesses,
-        this.rng,
-        PACMAN_TOPOLOGY,
-        { eliteCount: 8, mutateRate: 0.06, sigma: 0.8, clamp: WEIGHT_MAX },
-      );
+
+      // §3.3's adaptive mutation: 当连续5代最佳适应度没有显著提升时，轻微提高变异率.
+      // Raising it is how the population climbs out of the §4.4 plateau, where
+      // novel individuals otherwise get culled before they can pay off.
+      let generationBest = -Infinity;
+      for (let i = 0; i < this.populationSize; i++) generationBest = Math.max(generationBest, fitnesses[i]);
+      if (generationBest > this.lastBestFitness) {
+        this.lastBestFitness = generationBest;
+        this.stagnantGenerations = 0;
+        // Decay back down as progress resumes — §3.3 wants a *lower* rate late on
+        // (降低变异率，进行精细优化). Ratcheting up and staying there turns the GA
+        // into random search and the population actively gets worse.
+        this.mutateRate = Math.max(BASE_MUTATE_RATE, this.mutateRate - MUTATE_STEP);
+      } else if (++this.stagnantGenerations >= STAGNATION_LIMIT) {
+        this.stagnantGenerations = 0;
+        this.mutateRate = Math.min(MAX_MUTATE_RATE, this.mutateRate + MUTATE_STEP);
+      }
+
+      // Tournament selection (§3.2): 对于《吃豆人》这个问题，锦标赛选择的效果更好,
+      // because it purges the useless random strategies fast.
+      const next = nextTournamentGeneration(this.genomes.slice(0, this.populationSize), fitnesses, this.rng, {
+        tournamentSize: TOURNAMENT_K,
+        eliteFraction: ELITE_FRACTION,
+        crossoverRate: CROSSOVER_RATE,
+        mutateRate: this.mutateRate,
+        mutateRange: INIT_RANGE,
+      });
       this.genomes = [...next, new Float64Array(this.bestGenome)];
       this.generation++;
+      this.shownIndex = -1;
       this.episodeSeed = Math.floor(this.rng() * 0xffffffff) >>> 0;
+      this.rerollEnvironment();
       this.writeParams();
       this.uploadGenomes();
-      this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents));
+      this.device.queue.writeBuffer(this.buffers.agents, 0, initialAgentStates(this.buffers.totalAgents, this.episodeSeed));
     } finally {
       this.isEvolving = false;
     }
@@ -297,6 +358,17 @@ export class PacmanEvolution {
       }
     }
     if (!this.playMode && this.populationSize === 1) shown = 0;
+    // Stick with whoever is on screen while they are still alive and still the
+    // leader by dot count. Re-picking a strictly-better agent every frame makes
+    // the camera jump between two pacmen mid-corridor, which reads as jitter
+    // even though each individual agent is moving smoothly.
+    if (!this.playMode && this.shownIndex >= 0 && this.shownIndex < this.populationSize) {
+      const prev = this.shownIndex * AGENT_FLOATS;
+      if (states[prev + A.gameOver] < 0.5 && states[prev + A.dotsLeft] <= bestDotsLeft + DISPLAY_STICKINESS) {
+        shown = this.shownIndex;
+      }
+    }
+    this.shownIndex = shown;
     const o = shown * AGENT_FLOATS;
     return {
       index: shown,
@@ -304,6 +376,7 @@ export class PacmanEvolution {
       lives: states[o + A.lives],
       dotsLeft: states[o + A.dotsLeft],
       level: states[o + A.level],
+      levelTimeLeft: Math.max(0, LEVEL_SECS - states[o + A.levelTicks] / 60),
       gameOver: states[o + A.gameOver] > 0.5,
       aliveCount,
       bestScore: this.bestScore,

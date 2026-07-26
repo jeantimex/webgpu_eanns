@@ -4,6 +4,7 @@ import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
 import { NetworkPanel } from '../../ui/networkPanel';
 import { requiredElement } from '../../utils/dom';
 import { initializeWebGPU } from '../../webgpu/utils';
+import { PACMAN_OUTPUT_LABELS } from './pacman_buffers';
 import { PacmanEvolution, type BestAgentSnapshot } from './pacman_evolution';
 import { loadPacmanModelFile, loadPacmanTestModel, loadSavedPacmanBest, savePacmanModel, savePacmanTestModel } from './pacman_model';
 import { PacmanRenderer } from './pacman_renderer';
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
   const hud = createHud();
   const networkPanel = new NetworkPanel(PacmanEvolution.topology, {
     variant: 'snake',
-    outputLabels: ['UP', 'RIGHT', 'DOWN', 'LEFT'],
+    outputLabels: PACMAN_OUTPUT_LABELS,
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
   });
 
@@ -154,6 +155,7 @@ async function main(): Promise<void> {
               ['SCORE', best.score],
               ['DOTS', best.dotsLeft],
               ['LEVEL', best.level],
+              ['TIME', `${Math.ceil(best.levelTimeLeft)}s`],
               ['STATUS', waiting ? 'READY (Press Arrow Key)' : best.gameOver ? 'GAME OVER (Press Arrow Key)' : 'PLAYING'],
             ]
           : isTest
@@ -162,16 +164,19 @@ async function main(): Promise<void> {
                 ['SCORE', best.score],
                 ['DOTS', best.dotsLeft],
                 ['LEVEL', best.level],
+                ['TIME', `${Math.ceil(best.levelTimeLeft)}s`],
                 ['STATUS', best.gameOver ? 'RESTARTING' : 'RUNNING'],
               ]
           : [
               ['GEN', evolution.generation],
+              ['MUT', `${(evolution.gaState().mutateRate * 100).toFixed(0)}%`],
               ['SCORE', best.score],
               ['BEST SCORE', best.bestScore],
               ['BEST LEVEL', best.bestLevel],
               ['BEST GEN', best.bestGeneration],
               ['DOTS', best.dotsLeft],
               ['LEVEL', best.level],
+              ['TIME', `${Math.ceil(best.levelTimeLeft)}s`],
               ['POP LEFT', best.aliveCount],
             ],
       });

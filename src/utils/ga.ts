@@ -129,3 +129,67 @@ export function nextCrossoverGeneration(
   for (let i = 0; i < Math.min(eliteCount, n); i++) next[i] = population[order[i]].slice();
   return next;
 }
+
+export interface TournamentOptions {
+  /** Individuals drawn per tournament; higher = stronger selection pressure (default 3). */
+  tournamentSize?: number;
+  /** Fraction of the population carried through untouched (default 0.02). */
+  eliteFraction?: number;
+  /** Probability a child is crossed from two parents rather than cloned (default 0.8). */
+  crossoverRate?: number;
+  /** Per-weight probability of being reset to a fresh random value (default 0.05). */
+  mutateRate?: number;
+  /** Half-width of the range a mutated weight is reset into (default 1). */
+  mutateRange?: number;
+}
+
+/** Best of `k` random draws. Stronger pressure than roulette, and indifferent to fitness scale. */
+function tournamentPick(fitnesses: ArrayLike<number>, rng: Rng, k: number): number {
+  let best = Math.floor(rng() * fitnesses.length);
+  for (let i = 1; i < k; i++) {
+    const challenger = Math.floor(rng() * fitnesses.length);
+    if (fitnesses[challenger] > fitnesses[best]) best = challenger;
+  }
+  return best;
+}
+
+/**
+ * Tournament GA as described in the EANN-Pacman writeup (§3.2–3.4): tournament
+ * selection at k=3, single-point crossover on the flat genome at rate ~0.8, and
+ * mutation that *resets* a weight to a fresh small random value at rate ~0.05
+ * (rather than nudging it, as the roulette variant above does).
+ *
+ * Tournament beat roulette there because it purges useless random strategies
+ * fast; the cost is diversity, which is why `eliteFraction` stays small (2%) and
+ * callers are expected to raise `mutateRate` when fitness stagnates.
+ */
+export function nextTournamentGeneration(
+  population: Float64Array[],
+  fitnesses: ArrayLike<number>,
+  rng: Rng,
+  options: TournamentOptions = {},
+): Float64Array[] {
+  const { tournamentSize = 3, eliteFraction = 0.02, crossoverRate = 0.8, mutateRate = 0.05, mutateRange = 1 } = options;
+  const n = population.length;
+  const genomeSize = population[0].length;
+
+  const next = Array.from({ length: n }, () => {
+    const parent = population[tournamentPick(fitnesses, rng, tournamentSize)];
+    const child = parent.slice();
+    if (rng() < crossoverRate) {
+      // Single-point: keep this parent up to the cut, take the other's tail.
+      const other = population[tournamentPick(fitnesses, rng, tournamentSize)];
+      const cut = Math.floor(rng() * genomeSize);
+      for (let k = cut; k < genomeSize; k++) child[k] = other[k];
+    }
+    for (let k = 0; k < genomeSize; k++) {
+      if (rng() < mutateRate) child[k] = (rng() * 2 - 1) * mutateRange;
+    }
+    return child;
+  });
+
+  const eliteCount = Math.max(1, Math.round(n * eliteFraction));
+  const order = population.map((_, i) => i).sort((a, b) => fitnesses[b] - fitnesses[a]);
+  for (let i = 0; i < Math.min(eliteCount, n); i++) next[i] = population[order[i]].slice();
+  return next;
+}

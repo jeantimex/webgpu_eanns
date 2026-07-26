@@ -1,6 +1,6 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
 import { WORLD_H, WORLD_W } from './maze';
-import type { PacmanBuffers } from './pacman_buffers';
+import { AGENT_FLOATS, type PacmanBuffers } from './pacman_buffers';
 
 // Atlas layout (single texture, sprites in row 0, maze at y=16):
 //   pacman strips (64px, 4 frames) at x = dir*64
@@ -48,7 +48,7 @@ struct Uniforms {
 @group(0) @binding(3) var<storage, read> agents: array<f32>;
 @group(0) @binding(4) var<storage, read> pelletList: array<u32>; // c, r, power, pad per pellet
 
-const AGENT_FLOATS = 68u;
+const AGENT_FLOATS = ${AGENT_FLOATS}u;
 const A_LEVEL = 8u;
 const A_GHOSTS = 17u;
 const A_PELLETS = 36u;
