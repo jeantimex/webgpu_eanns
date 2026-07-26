@@ -24,9 +24,10 @@ algorithms, with two deliberate departures that are documented and measured belo
 10. [Things we got wrong along the way](#10-things-we-got-wrong-along-the-way)
 11. [Measured results](#11-measured-results)
 12. [Debug tooling](#12-debug-tooling)
-13. [Files](#13-files)
-14. [Verifying changes headlessly](#14-verifying-changes-headlessly)
-15. [Known limits and next steps](#15-known-limits-and-next-steps)
+13. [Saving and loading models](#13-saving-and-loading-models)
+14. [Files](#14-files)
+15. [Verifying changes headlessly](#15-verifying-changes-headlessly)
+16. [Known limits and next steps](#16-known-limits-and-next-steps)
 
 ---
 
@@ -199,8 +200,14 @@ Argmax is the **worst** setting tested — worse than heavy randomness. The writ
 claim that randomness aids exploration is correct, and temperature 1.0 is
 genuinely near-optimal rather than an arbitrary default.
 
-The replay/test agent always takes the **mode** so the pacman you watch on screen
-behaves deterministically, while training agents sample.
+**Every network-driven agent samples at the same temperature, replay included.**
+An earlier version made the replay/Test agent take the mode instead, so that the
+pacman on screen would move deterministically. That was a mistake serious enough
+to get its own entry in §13: this policy leans on noise to break out of loops, so
+an argmax version of a genome is a genuinely different — and far weaker —
+controller than the one selection scored. Setting the temperature to 0 is still
+available if you want a deterministic agent, but know that you are then watching
+something other than what was evolved.
 
 ---
 
@@ -390,6 +397,7 @@ Recording these because the wrong turns were more instructive than the right one
 | "90 s per board is too short." | Measured: **zero** agents out of 300 hit the timeout, at either 90 s or 180 s. Doubling it changed nothing. The killer was the 8 s stall timer. |
 | "Adaptive mutation should ratchet up when stuck." | It must also come **back down**. Comparing against an all-time-best that is essentially never beaten made the rate climb monotonically to its cap and stay there; at 30% × 100 genes that is random search, and fitness actively *regressed* from 44.5 to 37 over 150 generations. |
 | "Multiplicative fitness like snake's `lifetime² × 2^food`." | Right instinct, wrong transfer. Snake has no clock so lifetime is pure upside; pacman races a timer, so a lifetime term rewards dawdling. |
+| "Make the replay agent deterministic so it is nicer to watch." | It silently ran a **different policy** than the one being evolved. The same saved genome scored 10 pellets under argmax and 187 sampled. Any presentation tweak that changes how actions are chosen changes the agent. |
 
 The general lesson: **measure before concluding.** Every one of these was resolved by
 a headless A/B in under two minutes, and every one of them contradicted a
@@ -441,7 +449,85 @@ There is also a **Level time** slider (30–180 s, live, persisted as `?level=`)
 
 ---
 
-## 13. Files
+## 13. Saving and loading models
+
+A model is just the flat genome plus some metadata. `pacman_model.ts` owns the
+format; nothing else touches storage.
+
+```json
+{
+  "topology": [11, 6, 4],
+  "weights": [ ... 100 floats ... ],
+  "meta": { "generation": 12, "eval": 730.4, "score": 8160, "level": 3 }
+}
+```
+
+| Path | Trigger | Destination |
+|---|---|---|
+| Autosave | Every time training beats its own best fitness | `localStorage["eanns:best:pacman"]` |
+| Save best model | Settings button | Downloads `eanns-pacman-gen<N>.json` |
+| Load saved best | Settings button | Copies the autosave into the Test slot, switches to Test mode |
+| Load model file | Settings button | Validates a `.json`, copies it into the Test slot, switches to Test mode |
+
+Test mode boots with `population = 1` and injects the stored genome into agent 0.
+
+### Validation
+
+`weights` must be exactly `PACMAN_GENOME_SIZE` (100) finite numbers, and a model
+loaded *from a file* must also declare a matching `topology`. A genome from an
+earlier network shape fails loudly rather than loading as garbage:
+
+```
+Unsupported Pacman topology [8,6,4], expected [11,6,4].
+```
+
+Autosaves from an older shape are silently discarded on read (the length check
+rejects them), so an obsolete entry in `localStorage` cannot block a new save.
+
+There is one subtlety in the autosave guard. It keeps whichever model has the
+higher `eval`, but that comparison is only meaningful if both numbers came from
+the **same fitness function** — and the fitness here has been rescaled more than
+once. `loadSavedPacmanBest()` therefore reports a `comparable` flag, true only
+when the stored topology matches the current one, and the guard ignores a stored
+`eval` that fails it. Without this, rescaling fitness while keeping the network
+shape would leave an unbeatable old high score wedged in storage, silently
+freezing autosave forever.
+
+### Replay behaviour
+
+Two things about replay are deliberate and worth knowing:
+
+- **The replay agent samples**, exactly like a training agent (§5). Forcing it to
+  argmax makes it a different, much worse controller — 10 pellets versus 187 on
+  the same genome.
+- **Each restart re-seeds** the agent's RNG. With a fixed seed the agent replays
+  one identical episode forever, which looks like a hang and tells you nothing
+  about the policy's actual range.
+
+### The saved best is the luckiest episode, not the typical one
+
+This is the most important thing to understand about the numbers in the HUD, and
+it is a property of the fitness function rather than a storage bug.
+
+Fitness is measured from a **single sampled episode**. The autosave records the
+all-time maximum of that quantity, so what gets stored is the genome that had the
+best *run*, which is not the same as the genome with the best *policy*. Replaying
+one saved best ten times:
+
+```
+44, 60, 67, 72, 97, 99, 101, 108, 147, 179     min 44 | median 99 | max 179
+```
+
+A 4× spread from identical weights. The generation that earned this save was
+credited with 464 pellets — the top of a distribution whose median is around 100.
+
+So a loaded model routinely plays worse than the score it was saved with. That is
+expected. The fix is to score each genome over several episodes and select on the
+mean, which is the top item in §16.
+
+---
+
+## 14. Files
 
 | File | Responsibility |
 |---|---|
@@ -467,7 +553,7 @@ machinery, so they stay with the demo.
 
 ---
 
-## 14. Verifying changes headlessly
+## 15. Verifying changes headlessly
 
 The whole simulation runs outside the browser under Deno's WebGPU, which makes it
 practical to A/B a change in about two minutes instead of squinting at a canvas.
@@ -497,12 +583,15 @@ resets agent state for the next generation, so reading after it yields all zeros
 
 ---
 
-## 15. Known limits and next steps
+## 16. Known limits and next steps
 
 **Fitness is a single sampled episode.** With stochastic actions, the same genome
 scores very differently run to run — `best` swings between 242 and 459 across
-adjacent generations. Tournament selection on a noisy signal selects partly on luck.
-Averaging 2–3 episodes per genome is the highest-value next change.
+adjacent generations, and a saved best replays with a 4× spread (§13). Tournament
+selection on a noisy signal selects partly on luck. Averaging 2-3 episodes per
+genome and selecting on the mean is the highest-value next change: it would make
+the saved best genuinely the best rather than the luckiest, and make the exported
+model's recorded score match what you actually see on replay.
 
 **One life.** `START_LIVES = 0` ends the run at first contact, around 21 s in, so
 agents rarely see a late board and get little gradient toward *finishing* one.
