@@ -2,9 +2,10 @@
 
 A population of cars learns to drive a closed circuit, evolved by a genetic
 algorithm. One GPU thread per car, all racing the same track from the same start
-line. This is a port of the well-known Unity "self-driving car with a genetic
-algorithm" project, and it follows that implementation closely — sensor layout,
-network shape, activation, fitness and selection are all deliberate matches.
+line. This is a port of [Applying_EANNs](https://github.com/ArztSamuel/Applying_EANNs),
+the well-known Unity "self-driving car with a genetic algorithm" project, and it
+follows that implementation closely — sensor layout, network shape, activation,
+fitness and selection are all deliberate matches.
 
 It is the most mechanically detailed demo in the repo, and the only one whose
 network drives **continuous** outputs rather than picking a discrete action.

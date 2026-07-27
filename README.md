@@ -1,10 +1,18 @@
 # WebGPU EANNs
 
-Browser port of [Applying_EANNs](https://github.com/ArztSamuel/Applying_EANNs): 2D top-down
-cars that learn to drive a track using a feedforward neural network trained by a genetic
-algorithm — no gradient descent, no PyTorch, no training backend. The physics simulation and
-neural-network forward passes for the whole population run in a **WebGPU compute shader**;
-the genetic algorithm itself (selection, mutation over 30×47 floats) runs on the CPU.
+Evolutionary artificial neural networks in the browser: game-playing agents
+trained by genetic algorithms — no gradient descent, no training backend. Each
+demo evolves a population of small feedforward networks where the physics
+simulation and the network forward passes for the **whole population run in a
+WebGPU compute shader** (one GPU thread per agent); the genetic algorithm
+itself runs on the CPU between generations.
+
+Demos: **Snake**, **Pac-Man**, **Flappy Bird**, **Chrome Dino**, and a
+**2D self-driving car track**. Every demo is built on `src/core/`, a small
+TorchGA-style API — a demo is just a WGSL sim shader, a `Simulation` descriptor
+(state layout + fitness), and a renderer; see [API.md](API.md) and
+[REFERENCE.md](REFERENCE.md). Each demo also has its own README under
+`src/demos/<name>/`.
 
 ## Run it
 
@@ -17,6 +25,9 @@ Open the printed URL in a current Chrome/Edge (WebGPU required). `npm run build`
 and builds to `dist/`; `npm run preview` serves the build.
 
 ## How it works
+
+*This section dives into the track demo as the canonical example; the other
+demos share the same architecture and have their own READMEs under `src/demos/`.*
 
 ### The learning loop
 
