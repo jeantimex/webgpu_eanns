@@ -1,5 +1,6 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
-import { A, AGENT_FLOATS, CELLS, GRID, type SnakeBuffers } from './snake_buffers';
+import { A, AGENT_FLOATS, CELLS, GRID } from './snake_buffers';
+import type { CoreBuffers } from '../../core';
 
 const COLOR_PAGE: [number, number, number] = [0.08, 0.12, 0.12];
 const COLOR_BOARD: [number, number, number] = [0.63, 0.67, 0.58]; // #a1ab94
@@ -220,7 +221,7 @@ export class SnakeRenderer {
   constructor(
     private readonly canvas: HTMLCanvasElement,
     gpu: WebGPUState,
-    buffers: SnakeBuffers,
+    buffers: CoreBuffers,
   ) {
     this.device = gpu.device;
     this.context = gpu.context;

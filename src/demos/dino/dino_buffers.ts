@@ -1,7 +1,3 @@
-import { createBufferWithData } from '../../webgpu/utils';
-
-/** Genome layout [6 -> 8 -> 1], layer-major row-major with bias rows last: 6x8 + 8 + 8x1 + 1. */
-export const DINO_GENOME_SIZE = 65;
 /** Dino state, 8 f32 = 32 bytes: y@0, velY@1, alive(u32)@2, score(u32)@3, fitness@4, jumpOutput@5, onGround(u32)@6, pad@7. */
 export const DINO_FLOATS = 8;
 
@@ -34,14 +30,6 @@ export interface ObstacleState {
   multi: number;
 }
 
-export interface DinoBuffers {
-  params: GPUBuffer;
-  genomes: GPUBuffer;
-  dinos: GPUBuffer;
-  obstacle: GPUBuffer;
-  readback: GPUBuffer;
-}
-
 /** All dinos on the ground at the start pose, alive, score 0. */
 export function initialDinoStates(count: number): Float32Array<ArrayBuffer> {
   const states = new Float32Array(count * DINO_FLOATS);
@@ -53,44 +41,4 @@ export function initialDinoStates(count: number): Float32Array<ArrayBuffer> {
     new Uint32Array(states.buffer)[o + 6] = 1; // onGround
   }
   return states;
-}
-
-export function createDinoBuffers(device: GPUDevice, populationSize: number): DinoBuffers {
-  // SimParams uniform: dinoCount (u32), gamespeed (f32) = 8 bytes, padded to 16.
-  const paramsData = new ArrayBuffer(16);
-  new Uint32Array(paramsData)[0] = populationSize;
-
-  const genomes = device.createBuffer({
-    label: 'dino genomes',
-    size: populationSize * DINO_GENOME_SIZE * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  const dinoBytes = populationSize * DINO_FLOATS * 4;
-  const dinos = device.createBuffer({
-    label: 'dino states',
-    size: dinoBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-
-  const readback = device.createBuffer({
-    label: 'dino readback',
-    size: dinoBytes,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-
-  // One active obstacle: x, y, w, h (f32) = 16 bytes.
-  const obstacle = device.createBuffer({
-    label: 'dino obstacle',
-    size: 16,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  return {
-    params: createBufferWithData(device, 'dino params', new Uint32Array(paramsData), GPUBufferUsage.UNIFORM),
-    genomes,
-    dinos,
-    obstacle,
-    readback,
-  };
 }

@@ -1,8 +1,13 @@
+import { defineNetwork } from '../../core/network';
+
 /** Unity FNNTopology. */
 export const TOPOLOGY = [5, 4, 3, 2] as const;
 
 /** (5+1)*4 + (4+1)*3 + (3+1)*2, bias row included per layer. */
 export const GENOME_SIZE = 47;
+
+/** The core-network view: SoftSign on ALL layers (MathHelper.SoftSignFunction). */
+export const trackNetwork = defineNetwork(TOPOLOGY, { hidden: 'softsign', output: 'softsign' });
 
 /** MathHelper.SoftSignFunction, applied on ALL layers. */
 export function softSign(x: number): number {

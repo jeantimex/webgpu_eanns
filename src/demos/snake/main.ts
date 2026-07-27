@@ -1,148 +1,52 @@
 import '../../style.css';
-import { currentSettings, persistMode, updateSetting } from '../../gui/controls_gui';
-import { createDemoSettingsPanel, createFpsDisplay } from '../../ui/demoSettingsPanel';
-import { NetworkPanel } from '../../ui/networkPanel';
-import { requiredElement } from '../../utils/dom';
-import { initializeWebGPU } from '../../webgpu/utils';
-import { loadSavedSnakeBest, loadSnakeModelFile, loadSnakeTestModel, saveSnakeModel, saveSnakeTestModel } from './model';
-import { SnakeEvolution, type BestSnakeSnapshot } from './snake_evolution';
+import { startDemo } from '../../core';
+import { A, AGENT_FLOATS } from './snake_buffers';
+import { snakeNetwork } from './snake_net';
+import { snakeSim } from './snake_sim';
+import { parseSnakeAiCsv } from './model';
 import { SnakeRenderer } from './snake_renderer';
 
-const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
-const message = requiredElement<HTMLDivElement>('#message');
+startDemo({
+  namespace: 'snake',
+  network: snakeNetwork,
+  simulation: snakeSim,
+  // CodeBullet's SnakeAI GA: roulette selection + per-layer single-point crossover.
+  ga: { selection: 'layered-crossover', eliteCount: 1, mutateRate: 0.05, sigma: 0.2, clamp: 1 },
+  stepsPerSecond: 100, // SnakeAI runs at 100 moves/sec, multiplied by sim speed
+  bodyClass: 'snake-layout',
+  hudChipStyle: true, // LCD-colored chips, readable over the light board
+  legacyModelParser: parseSnakeAiCsv,
 
-function showMessage(text: string): void {
-  console.log(text);
-  message.textContent = text;
-  message.classList.add('visible');
-}
+  createRenderer: (canvas, gpu, evo) => new SnakeRenderer(canvas, gpu, evo.buffers),
 
-function showError(error: unknown): void {
-  console.error(error);
-  showMessage(error instanceof Error ? error.message : 'Unable to start WebGPU.');
-}
+  hud: (evo, states, shown) => {
+    const o = shown * AGENT_FLOATS;
+    return (
+      `Apples:  ${states[o + A.apples]}\n` +
+      `Length:  ${states[o + A.length]}\n` +
+      `Moves:   ${states[o + A.moves]}\n` +
+      `Life:    ${states[o + A.sinceEat]}\n` +
+      `Alive:   ${evo.countAlive(states)}`
+    );
+  },
 
-/** DOM overlay: Apples/Length/Moves top-left, Generation bottom-left. */
-function createHud(): { update(best: BestSnakeSnapshot, generation: number): void } {
-  // Dark ink on an LCD-colored chip: readable over both the light board and
-  // the dark page margin.
-  const chip = (el: HTMLDivElement): void => {
-    el.style.background = 'rgba(170, 176, 155, 0.92)';
-    el.style.color = '#1e1e1e';
-    el.style.padding = '0.35rem 0.6rem';
-    el.style.borderRadius = '0.4rem';
-  };
-  const stats = document.createElement('div');
-  stats.className = 'hud hud-stats';
-  chip(stats);
-  const gen = document.createElement('div');
-  gen.className = 'hud hud-generation';
-  chip(gen);
-  document.body.append(stats, gen);
-  let lastStats = '';
-  let lastGen = -1;
-  return {
-    update(best, generation) {
-      const text = `Apples:  ${best.apples}\nLength:  ${best.length}\nMoves:   ${best.moves}\nLife:    ${best.life}\nAlive:   ${best.aliveCount}`;
-      if (text !== lastStats) {
-        stats.textContent = text;
-        lastStats = text;
-      }
-      if (generation !== lastGen) {
-        gen.textContent = `Generation: ${generation}`;
-        lastGen = generation;
-      }
-    },
-  };
-}
-
-async function main(): Promise<void> {
-  document.body.classList.add('snake-layout');
-  const gpu = await initializeWebGPU(canvas);
-  const settings = currentSettings();
-  let isTest = settings.mode === 'Test';
-  let noModelWarning = false;
-  const testModel = loadSnakeTestModel();
-  if (isTest && !testModel) {
-    isTest = false;
-    noModelWarning = true;
-    persistMode('Train');
-  }
-
-  const evolution = SnakeEvolution.init(gpu.device, isTest ? 1 : settings.population);
-  if (isTest) evolution.injectBest(testModel!);
-  const renderer = new SnakeRenderer(canvas, gpu, evolution.buffers);
-  const hud = createHud();
-  const fpsDisplay = createFpsDisplay();
-  const networkPanel = new NetworkPanel([24, 16, 16, 4], {
+  networkPanel: {
     variant: 'snake',
     outputLabels: ['UP', 'DOWN', 'LEFT', 'RIGHT'],
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
-  });
-  if (noModelWarning) {
-    showMessage('Test mode needs a model - starting in Train mode. Use "Load model file" to test one.');
-    setTimeout(() => message.classList.remove('visible'), 6000);
-  }
+  },
 
-  const controls = createDemoSettingsPanel(settings, {
-    onSaveModel: () => {
-      saveSnakeModel(evolution.bestGenome(), evolution.bestMeta());
-    },
-    onLoadSavedBest: () => {
-      const saved = loadSavedSnakeBest();
-      if (!saved) {
-        showMessage('No saved best Snake model yet.');
-        return;
-      }
-      saveSnakeTestModel(saved.weights);
-      updateSetting('mode', 'Test');
-    },
-    onLoadModelFile: (file) => {
-      loadSnakeModelFile(file)
-        .then((weights) => {
-          saveSnakeTestModel(weights);
-          updateSetting('mode', 'Test');
-        })
-        .catch((error: unknown) => alert(error instanceof Error ? error.message : String(error)));
-    },
-  }, { showFps: true });
-
-  // Turn-based: SnakeAI runs at 100 moves/sec, multiplied by sim speed.
-  let last = performance.now();
-  let acc = 0;
-  const loop = (now: number): void => {
-    acc += (Math.min(now - last, 100) / 1000) * 100 * controls.speed;
-    last = now;
-    const steps = Math.min(Math.floor(acc), 600);
-    acc -= steps;
-    if (steps > 0) evolution.substeps(steps);
-    fpsDisplay.setVisible(controls.showFps);
-    if (controls.showFps) fpsDisplay.update(now);
-    if (isTest) void evolution.restartDisplayIfDead();
-    else void evolution.checkAndEvolve();
-    void evolution.readBestAgentState().then((best) => {
-      renderer.setBestIndex(best.index);
-      hud.update(best, evolution.generation);
-      const meta = evolution.bestMeta();
-      networkPanel.draw(evolution.genomeAt(best.index), {
-        inputs: best.vision,
-        outputs: best.decision,
-        stats: [
-          ['GEN', evolution.generation],
-          ['BEST FITNESS', Math.floor(meta.eval)],
-          ['POP LEFT', best.aliveCount],
-          ['MOVES LEFT', Math.max(0, Math.floor(best.life))],
-          ['MUTATION RATE', '0.05'],
-          ['SCORE', Math.floor(best.score)],
-          ['BEST SCORE', Math.floor(meta.score)],
-          ['BEST GEN', meta.generation],
-        ],
-      });
-    });
-    renderer.render();
-    requestAnimationFrame(loop);
-  };
-  loop(performance.now());
-}
-
-main().catch(showError);
+  panelStats: (evo, shown, _inputs, states) => {
+    const o = shown * AGENT_FLOATS;
+    return [
+      ['GEN', evo.generation],
+      ['BEST FITNESS', Math.floor(Number.isFinite(evo.bestFitness) ? evo.bestFitness : 0)],
+      ['POP LEFT', evo.countAlive(states)],
+      ['MOVES LEFT', Math.max(0, Math.floor(states[o + A.sinceEat]))],
+      ['MUTATION RATE', '0.05'],
+      ['SCORE', Math.floor(states[o + A.score])],
+      ['BEST SCORE', Math.floor(evo.bestMetaValue.score ?? 0)],
+      ['BEST GEN', evo.bestGeneration],
+    ];
+  },
+});

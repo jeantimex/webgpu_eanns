@@ -1,5 +1,3 @@
-import GUI from 'lil-gui';
-
 const MODE_KEY = 'eanns:mode';
 const TRACK_KEY = 'eanns:track';
 const POP_KEY = 'eanns:pop';
@@ -79,66 +77,4 @@ export function updateUrlParamLive(key: string, value: string | number): void {
 /** Persist mode without a reload (main uses it for the no-model fallback). */
 export function persistMode(mode: 'Train' | 'Test'): void {
   updateUrlParamLive('mode', mode);
-}
-
-export interface GuiActions {
-  onSaveModel(): void;
-  onLoadSavedBest(): void;
-  /** Called with the file picked via "Load model file"; the demo decides what to do with it. */
-  onLoadModelFile(file: File): void;
-}
-
-export interface GuiOptions {
-  /** Demo's track list; when set, a track selector is shown and switching reloads with ?track=. */
-  tracks?: readonly string[];
-  /** Track uses this; demos without camera follow can hide it. */
-  showFollowCam?: boolean;
-}
-
-/** lil-gui control panel; returns live, non-persisted view/sim options. */
-export function setupControls(
-  actions: GuiActions,
-  options?: GuiOptions,
-): {
-  speed: number;
-  followCam: boolean;
-  setFollow(v: boolean): void;
-} {
-  const current = currentSettings(options?.tracks);
-  const controls = { ...current, followCam: false };
-
-  // Hidden file input behind the "Load model file" button.
-  const fileInput = document.createElement('input');
-  fileInput.type = 'file';
-  fileInput.accept = '.json,.txt,.csv';
-  fileInput.style.display = 'none';
-  document.body.append(fileInput);
-  fileInput.addEventListener('change', () => {
-    const file = fileInput.files?.[0];
-    fileInput.value = '';
-    if (file) actions.onLoadModelFile(file);
-  });
-
-  const gui = new GUI({ title: 'EANNs' });
-  gui.add(controls, 'mode', ['Train', 'Test', 'Play']).onChange((val: 'Train' | 'Test' | 'Play') => updateSetting('mode', val));
-  if (options?.tracks) {
-    gui.add(controls, 'track', options.tracks).onChange((val: string) => updateSetting('track', val));
-  }
-  gui.add(controls, 'population', 3, 10000, 1).name('Population (URL)').onFinishChange((val: number) => updateSetting('pop', val));
-  gui.add(controls, 'speed', 1, 100, 1).name('Sim speed').onChange((val: number) => updateUrlParamLive('speed', val));
-  const followController = options?.showFollowCam === false ? null : gui.add(controls, 'followCam').name('Follow best car');
-  const buttons = {
-    saveBestModel: actions.onSaveModel,
-    loadModelFile: () => fileInput.click(),
-    loadSavedBest: actions.onLoadSavedBest,
-  };
-  gui.add(buttons, 'saveBestModel').name('Save best model');
-  gui.add(buttons, 'loadModelFile').name('Load model file (Test mode)');
-  gui.add(buttons, 'loadSavedBest').name('Load saved best');
-  return Object.assign(controls, {
-    setFollow: (v: boolean) => {
-      controls.followCam = v;
-      followController?.updateDisplay();
-    },
-  });
 }

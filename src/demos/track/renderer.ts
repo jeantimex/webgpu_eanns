@@ -1,4 +1,5 @@
-import { CAR_FLOATS, type SimBuffers } from './buffers';
+import { CAR_FLOATS } from './buffers';
+import type { CoreBuffers } from '../../core';
 import { buildRenderWalls, type Track } from './track';
 import { createBufferWithData, resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
 
@@ -152,14 +153,14 @@ export class Renderer {
     private readonly canvas: HTMLCanvasElement,
     gpu: WebGPUState,
     track: Track,
-    buffers: SimBuffers,
+    buffers: CoreBuffers,
   ) {
     this.device = gpu.device;
     this.context = gpu.context;
     this.format = gpu.format;
     this.camX = this.targetX = track.start.x;
     this.camY = this.targetY = track.start.y;
-    this.carCount = buffers.cars.size / (CAR_FLOATS * 4);
+    this.carCount = buffers.agents.size / (CAR_FLOATS * 4);
 
     // Render-only wall strips (centerlines), separate from the sim's edge buffer.
     const renderWalls = buildRenderWalls(track).flat();
@@ -209,7 +210,7 @@ export class Renderer {
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.cameraBuffer } },
-        { binding: 1, resource: { buffer: buffers.cars } },
+        { binding: 1, resource: { buffer: buffers.agents } },
         { binding: 2, resource: { buffer: renderWallBuffer } },
         { binding: 3, resource: { buffer: buffers.sensors } },
       ],

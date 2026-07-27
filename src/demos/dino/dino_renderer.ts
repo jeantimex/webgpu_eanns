@@ -1,4 +1,5 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
+import type { CoreBuffers } from '../../core';
 import {
   DINO_FLOATS,
   DINO_H,
@@ -7,7 +8,6 @@ import {
   PLAT_Y,
   WORLD_H,
   WORLD_W,
-  type DinoBuffers,
   type ObstacleState,
 } from './dino_buffers';
 
@@ -130,12 +130,12 @@ export class DinoRenderer {
   private constructor(
     private readonly canvas: HTMLCanvasElement,
     gpu: WebGPUState,
-    buffers: DinoBuffers,
+    buffers: CoreBuffers,
     texture: GPUTexture,
   ) {
     this.device = gpu.device;
     this.context = gpu.context;
-    this.dinoCount = buffers.dinos.size / (DINO_FLOATS * 4);
+    this.dinoCount = buffers.agents.size / (DINO_FLOATS * 4);
 
     this.uniformBuffer = this.device.createBuffer({
       label: 'dino uniforms',
@@ -191,14 +191,14 @@ export class DinoRenderer {
         { binding: 0, resource: { buffer: this.uniformBuffer } },
         { binding: 1, resource: sampler },
         { binding: 2, resource: texture.createView() },
-        { binding: 3, resource: { buffer: buffers.dinos } },
+        { binding: 3, resource: { buffer: buffers.agents } },
       ],
     });
 
     this.context.configure({ device: this.device, format: gpu.format, alphaMode: 'opaque' });
   }
 
-  static async create(canvas: HTMLCanvasElement, gpu: WebGPUState, buffers: DinoBuffers): Promise<DinoRenderer> {
+  static async create(canvas: HTMLCanvasElement, gpu: WebGPUState, buffers: CoreBuffers): Promise<DinoRenderer> {
     const blob = await (await fetch('/assets/dino/sprite.png')).blob();
     const bitmap = await createImageBitmap(blob);
     const texture = gpu.device.createTexture({

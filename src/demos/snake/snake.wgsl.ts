@@ -4,7 +4,8 @@
  * apples spawn from a per-agent xorshift RNG. State is raw-indexed (see A in
  * snake_buffers.ts) — no WGSL struct, so CPU/GPU layouts cannot drift.
  */
-import { AGENT_FLOATS, CELLS, GRID, MASK_WORDS, SNAKE_GENOME_SIZE, A } from './snake_buffers';
+import { AGENT_FLOATS, CELLS, GRID, MASK_WORDS, A } from './snake_buffers';
+import { snakeNetwork } from './snake_net';
 
 export const snakeShader = /* wgsl */ `
 struct SimParams {
@@ -37,7 +38,7 @@ const A_MASK = ${A.bodyMask}u;
 const A_RING = ${A.ring}u;
 
 const AGENT_FLOATS = ${AGENT_FLOATS}u;
-const GENOME_FLOATS = ${SNAKE_GENOME_SIZE}u;
+const GENOME_FLOATS = ${snakeNetwork.genomeSize}u;
 const GRID = ${GRID};
 const GRID_U = ${GRID}u;
 const CELLS = ${CELLS}u;

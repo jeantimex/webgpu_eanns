@@ -83,7 +83,7 @@ Plus a `readback` buffer (`MAP_READ | COPY_DST`), target of the per-frame state 
 `CarState` is 12 f32 (48 B stride), mirrored exactly in WGSL:
 `pos(2), angleDeg, vel, alive(u32), cpIndex(u32), timeSinceCp, fitness, outputs(2), pad(2)`.
 
-#### Compute pass (`src/demos/track/sim.wgsl.ts`, driven by `src/demos/track/evolution.ts`)
+#### Compute pass (`src/demos/track/sim.wgsl.ts`, driven by `src/core/evolution.ts`)
 
 - `@workgroup_size(64)`, one invocation per car, `ceil(population / 64)` workgroups.
 - Each dispatch = one physics substep at a fixed `dt = 1/50` s (Unity's FixedUpdate rate):
@@ -93,10 +93,10 @@ Plus a `readback` buffer (`MAP_READ | COPY_DST`), target of the per-frame state 
 - `Evolution.substeps(k)` records k dispatches in one command buffer per rendered frame —
   `k` is the GUI's "Sim speed", so training runs up to 64× realtime without touching the CPU.
 - **Generation-end detection**: once per frame the cars buffer is copied to the readback
-  buffer and `mapAsync`'d; concurrent consumers (`isGenerationOver`, `readFitness`,
-  `readBestCarState`) share that single in-flight readback. When every car's `alive` flag is
-  0, `evolve()` runs the CPU GA, uploads the new genomes with `queue.writeBuffer`, and
-  rewrites the initial car states — the next frame starts the new generation.
+  buffer and `mapAsync`'d; concurrent consumers share that single in-flight readback. When
+  every car's `alive` flag is 0, `checkAndEvolve()` runs the CPU GA, uploads the new genomes
+  with `queue.writeBuffer`, and rewrites the initial car states — the next frame starts the
+  new generation.
 
 #### Render pass (`src/demos/track/renderer.ts`)
 
@@ -118,9 +118,9 @@ like Unity's `CameraMovement.cs`; wheel zooms, dragging pans (and auto-disables 
 
 #### CPU side
 
-- `src/demos/track/network.ts` — forward pass, genome↔weights mapping in Unity's exact order.
-- `src/demos/track/ga.ts` — seeded RNG (mulberry32), population init (uniform ±1), `nextGeneration`.
-- `src/demos/track/model.ts` — model save/load, `localStorage` autosave, Unity genotype import.
+- `src/core/network.ts` — topology → genome layout, `forwardCPU`, genome↔weights mapping.
+- `src/core/ga.ts` + `src/utils/ga.ts` — the GA operators (selection by name).
+- `src/core/modelStore.ts` — model save/load, `localStorage` autosave, legacy format import.
 - `src/demos/track/car.ts` — CPU reference implementation of the car physics, used by the selftest
   as a parity oracle for the WGSL sim (and nothing else — training is GPU-only).
 
@@ -191,38 +191,59 @@ To export tracks from the Unity project yourself, drop `tools/TrackExporter.cs` 
 `Applying_EANNs/UnityProject/Assets/Editor/`, then use menu **Tools/EANNs/Export Open Track
 Scene** (or **Export All Track Scenes**). JSON lands in `<UnityProject>/ExportedTracks/`.
 
+## API
+
+All demos are built on `src/core/`, a TorchGA-style API: a demo provides a
+**network** (`defineNetwork`), a **simulation** (one WGSL shader + state layout
++ fitness reducer), and a **renderer**; the shared driver and bootstrap supply
+the GA, GPU plumbing, persistence, panels, and the rAF loop.
+
+- [API.md](API.md) — guide: quickstart, headless usage, adding a new demo.
+- [REFERENCE.md](REFERENCE.md) — the full public API reference.
+
 ## Project layout
 
 ```
 src/
+  core/      the TorchGA-style API every demo is built on:
+             network.ts (defineNetwork, genome layout, forwardCPU),
+             population.ts (createPopulation), ga.ts (GAConfig by name),
+             evolution.ts (shared generation driver: buffers, dispatch,
+             readback, GA step, best tracking), modelStore.ts (JSON model
+             persistence), runDemo.ts (shared bootstrap: settings, panels,
+             HUD, rAF loop, Train/Test/Play modes)
   demos/
-    track/     the car demo, self-contained: main.ts, network.ts (forward pass),
-               ga.ts (genetic algorithm), model.ts (persistence), selftest.ts
-               (parity/unit asserts), sim.wgsl.ts (compute shader), buffers.ts,
-               evolution.ts (generation driver: dispatch, readback, GA hand-off),
-               track.ts (track data + checkpoint math), car.ts (CPU reference
-               physics), renderer.ts (instanced render pass, pan/zoom), hud.ts
-    flappy/    the Flappy Bird demo, same shape: main.ts, flappy.wgsl.ts,
-               flappy_buffers.ts, flappy_evolution.ts, flappy_renderer.ts
-    dino/      the Chrome Dino demo, same shape: main.ts, dino.wgsl.ts,
-               dino_buffers.ts, dino_evolution.ts, dino_renderer.ts
-    pacman/    the Pac-Man demo, same shape: main.ts, maze.ts, pacman.wgsl.ts,
-               pacman_buffers.ts, pacman_evolution.ts, pacman_renderer.ts
+    track/     the car demo: main.ts (runDemo descriptor), track_sim.ts,
+               network.ts (forward pass), model.ts (Unity genotype parser),
+               selftest.ts (parity/unit asserts), sim.wgsl.ts (compute shader),
+               buffers.ts, track.ts (track data + checkpoint math), car.ts
+               (CPU reference physics), renderer.ts (instanced render pass, pan/zoom)
+    flappy/    the Flappy Bird demo: main.ts, flappy_sim.ts, flappy_net.ts,
+               flappy.wgsl.ts, flappy_buffers.ts, flappy_renderer.ts
+    dino/      the Chrome Dino demo: main.ts, dino_sim.ts, dino_net.ts,
+               dino.wgsl.ts, dino_buffers.ts, dino_renderer.ts
+    pacman/    the Pac-Man demo: main.ts, pacman_sim.ts, pacman_net.ts, maze.ts,
+               pacman.wgsl.ts, pacman_buffers.ts, pacman_renderer.ts
                (mechanics + sprites from the MIT-licensed pacman-js)
-    snake/     the Snake demo, same shape: main.ts, snake.wgsl.ts,
-               snake_buffers.ts, snake_evolution.ts, snake_renderer.ts
-  gui/       controls_gui.ts (demo-agnostic lil-gui panel, URL/localStorage settings)
-  ui/        networkPanel.ts (2D-canvas network diagram, topology passed in)
+    snake/     the Snake demo: main.ts, snake_sim.ts, snake_net.ts, model.ts
+               (SnakeAI CSV parser), snake.wgsl.ts, snake_buffers.ts, snake_renderer.ts
+  gui/       controls_gui.ts (URL/localStorage settings)
+  ui/        networkPanel.ts (2D-canvas network diagram, topology passed in),
+             demoSettingsPanel.ts (shared settings side panel)
   webgpu/    utils.ts (device/context init, buffer helper, DPI-aware resize)
-  utils/     dom.ts, rng.ts (seeded RNG), ga.ts (roulette-wheel GA)
+  utils/     dom.ts, rng.ts (seeded RNG), ga.ts (GA operators), evaluation.ts
+             (multi-episode scoring)
 public/tracks/         track1–4.json (extracted from Unity), practice.json
 public/assets/flappy/  sprites from the source repo
 tools/                 TrackExporter.cs (Unity editor script)
 ```
 
-A demo directory holds everything specific to that training project (sim shader, GA,
-persistence, renderer); adding a new project means adding a new `src/demos/<name>/`
-directory plus an HTML entry — the shared code is only `gui/`, `ui/`, `webgpu/`, `utils/`.
+A demo directory holds only what is specific to that training project: the sim
+shader, the agent-state layout, a `Simulation` (fitness reducer + generation-end
+rule), and the renderer. Everything else — the GA, GPU buffer/dispatch/readback
+plumbing, best-model persistence, settings panel, and the rAF loop — comes from
+`src/core/`. Adding a new demo means a new `src/demos/<name>/` directory with a
+`startDemo({...})` main.ts plus an HTML entry — see [API.md](API.md).
 
 ## Selftest
 

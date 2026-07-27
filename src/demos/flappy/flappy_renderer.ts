@@ -1,4 +1,5 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
+import type { CoreBuffers } from '../../core';
 import {
   BIRD_FLOATS,
   BIRD_H,
@@ -6,7 +7,6 @@ import {
   GROUND_Y,
   WORLD_H,
   WORLD_W,
-  type FlappyBuffers,
 } from './flappy_buffers';
 
 // Sprite sizes from the source repo's assets.
@@ -161,12 +161,12 @@ export class FlappyRenderer {
   private constructor(
     private readonly canvas: HTMLCanvasElement,
     gpu: WebGPUState,
-    buffers: FlappyBuffers,
+    buffers: CoreBuffers,
     textures: Record<AssetName, GPUTexture>,
   ) {
     this.device = gpu.device;
     this.context = gpu.context;
-    this.birdCount = buffers.birds.size / (BIRD_FLOATS * 4);
+    this.birdCount = buffers.agents.size / (BIRD_FLOATS * 4);
 
     this.cameraBuffer = this.device.createBuffer({
       label: 'flappy camera',
@@ -220,7 +220,7 @@ export class FlappyRenderer {
           { binding: 0, resource: { buffer: this.cameraBuffer } },
           { binding: 1, resource: sampler },
           { binding: 2, resource: texture.createView() },
-          { binding: 3, resource: { buffer: buffers.birds } },
+          { binding: 3, resource: { buffer: buffers.agents } },
           { binding: 4, resource: { buffer: buffers.pipes } },
         ],
       });
@@ -235,7 +235,7 @@ export class FlappyRenderer {
     this.context.configure({ device: this.device, format: gpu.format, alphaMode: 'opaque' });
   }
 
-  static async create(canvas: HTMLCanvasElement, gpu: WebGPUState, buffers: FlappyBuffers): Promise<FlappyRenderer> {
+  static async create(canvas: HTMLCanvasElement, gpu: WebGPUState, buffers: CoreBuffers): Promise<FlappyRenderer> {
     const entries = await Promise.all(
       ASSETS.map(async (name) => [name, await loadTexture(gpu.device, name)] as const),
     );

@@ -1,102 +1,68 @@
 import '../../style.css';
-import { currentSettings } from '../../gui/controls_gui';
-import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
-import { NetworkPanel } from '../../ui/networkPanel';
-import { requiredElement } from '../../utils/dom';
-import { initializeWebGPU } from '../../webgpu/utils';
-import { DinoEvolution, type BestDinoSnapshot } from './dino_evolution';
+import { startDemo } from '../../core';
+import { DINO_FLOATS } from './dino_buffers';
+import { dinoNetwork } from './dino_net';
+import { dinoSim, dinoWorld } from './dino_sim';
 import { DinoRenderer } from './dino_renderer';
 
-const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
-const message = requiredElement<HTMLDivElement>('#message');
-
-function showMessage(text: string): void {
-  console.log(text);
-  message.textContent = text;
-  message.classList.add('visible');
+/** Highest-score dino (the original highlights the leader). */
+function pickShown(states: Float32Array): number {
+  const u32 = new Uint32Array(states.buffer);
+  let best = 0;
+  for (let i = 1; i < states.length / DINO_FLOATS; i++) {
+    if (u32[i * DINO_FLOATS + 3] > u32[best * DINO_FLOATS + 3]) best = i;
+  }
+  return best;
 }
 
-function showError(error: unknown): void {
-  console.error(error);
-  showMessage(error instanceof Error ? error.message : 'Unable to start WebGPU.');
-}
+startDemo({
+  namespace: 'dino',
+  network: dinoNetwork,
+  simulation: dinoSim,
+  // The source repo's geneticAlgorithm.js: roulette pick, copy, gaussian mutation.
+  ga: { selection: 'roulette' },
+  displayAgent: false,
+  stepsPerSecond: 60, // the original's frame rate
+  maxStepsPerFrame: 240,
+  bodyClass: 'snake-layout',
 
-/** DOM overlay like the other demos: Score/Cleared/Alive top-left, Generation bottom-left. */
-function createHud(): { update(best: BestDinoSnapshot, cleared: number, generation: number): void } {
-  const stats = document.createElement('div');
-  stats.className = 'hud hud-stats';
-  const gen = document.createElement('div');
-  gen.className = 'hud hud-generation';
-  document.body.append(stats, gen);
-  let lastStats = '';
-  let lastGen = -1;
-  return {
-    update(best, cleared, generation) {
-      // Score shown in the original's units (one point per ~7 frames).
-      const text = `Score:   ${Math.floor(best.score / 7)}\nCleared: ${cleared}\nAlive:   ${best.aliveCount}\nFitness: ${best.fitness.toFixed(1)}`;
-      if (text !== lastStats) {
-        stats.textContent = text;
-        lastStats = text;
-      }
-      if (generation !== lastGen) {
-        gen.textContent = `Generation: ${generation}`;
-        lastGen = generation;
-      }
-    },
-  };
-}
+  createRenderer: async (canvas, gpu, evo) => {
+    const renderer = await DinoRenderer.create(canvas, gpu, evo.buffers);
+    return {
+      render: () => renderer.render(dinoWorld.obstacle, dinoWorld.groundScroll, dinoWorld.runFrame),
+      setBestIndex: (i) => renderer.setBestIndex(i),
+    };
+  },
 
-async function main(): Promise<void> {
-  document.body.classList.add('snake-layout');
-  const gpu = await initializeWebGPU(canvas);
-  const settings = currentSettings();
+  pickShownAgent: (states) => pickShown(states),
 
-  const evolution = DinoEvolution.init(gpu.device, settings.population);
-  const renderer = await DinoRenderer.create(canvas, gpu, evolution.buffers);
-  const hud = createHud();
-  const networkPanel = new NetworkPanel([6, 8, 1], {
+  hud: (evo, states, shown) => {
+    const o = shown * DINO_FLOATS;
+    const u32 = new Uint32Array(states.buffer);
+    return (
+      `Score:   ${Math.floor(u32[o + 3] / 7)}\n` + // the original's units: one point per ~7 frames
+      `Cleared: ${dinoWorld.cleared}\n` +
+      `Alive:   ${evo.countAlive(states)}\n` +
+      `Fitness: ${states[o + 4].toFixed(1)}`
+    );
+  },
+
+  networkPanel: {
     variant: 'snake',
     outputLabels: ['JUMP'],
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
-  });
+  },
 
-  const notWired = (): void => {
-    showMessage('Model save/load is not wired up for Chrome Dino yet.');
-  };
-  const controls = createDemoSettingsPanel(settings, {
-    onSaveModel: notWired,
-    onLoadSavedBest: notWired,
-    onLoadModelFile: notWired,
-  });
-
-  // Fixed 60 Hz sim ticks (the original's frame rate) x sim speed, independent of display Hz.
-  let last = performance.now();
-  let acc = 0;
-  const loop = (now: number): void => {
-    acc += (Math.min(now - last, 100) / 1000) * 60 * controls.speed;
-    last = now;
-    const steps = Math.min(Math.floor(acc), 240);
-    acc -= steps;
-    if (steps > 0) evolution.substeps(steps);
-    void evolution.checkAndEvolve();
-    void evolution.readBestDinoState().then((best) => {
-      renderer.setBestIndex(best.index);
-      hud.update(best, evolution.cleared, evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index), {
-        stats: [
-          ['GEN', evolution.generation],
-          ['SCORE', Math.floor(best.score / 7)],
-          ['CLEARED', evolution.cleared],
-          ['POP LEFT', best.aliveCount],
-          ['FITNESS', best.fitness.toFixed(1)],
-          ['SPEED', evolution.gamespeed.toFixed(1)],
-        ],
-      });
-    });
-    renderer.render(evolution.obstacle, evolution.groundScroll, evolution.runFrame);
-    requestAnimationFrame(loop);
-  };
-  loop(performance.now());
-}
-
-main().catch(showError);
+  panelStats: (evo, shown, _inputs, states) => {
+    const o = shown * DINO_FLOATS;
+    const u32 = new Uint32Array(states.buffer);
+    return [
+      ['GEN', evo.generation],
+      ['SCORE', Math.floor(u32[o + 3] / 7)],
+      ['CLEARED', dinoWorld.cleared],
+      ['POP LEFT', evo.countAlive(states)],
+      ['FITNESS', states[o + 4].toFixed(1)],
+      ['SPEED', dinoWorld.gamespeed.toFixed(1)],
+    ];
+  },
+});

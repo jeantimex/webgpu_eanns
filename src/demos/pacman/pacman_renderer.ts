@@ -1,6 +1,9 @@
 import { resizeCanvasToDisplaySize, type WebGPUState } from '../../webgpu/utils';
 import { COLS, mazeGraph, ROWS, UNREACHABLE, WORLD_H, WORLD_W } from './maze';
-import { AGENT_FLOATS, type PacmanBuffers } from './pacman_buffers';
+import { AGENT_FLOATS } from './pacman_buffers';
+import { pelletTiles } from './maze';
+import { createBufferWithData } from '../../webgpu/utils';
+import type { CoreBuffers } from '../../core';
 
 // Atlas layout (single texture, sprites in row 0, maze at y=16):
 //   pacman strips (64px, 4 frames) at x = dir*64
@@ -376,12 +379,22 @@ export class PacmanRenderer {
   private constructor(
     private readonly canvas: HTMLCanvasElement,
     gpu: WebGPUState,
-    buffers: PacmanBuffers,
+    buffers: CoreBuffers,
     atlas: GPUTexture,
   ) {
     this.device = gpu.device;
     this.context = gpu.context;
-    this.pelletCount = buffers.pelletCount;
+
+    // Renderer-only pellet list: c, r, power (u32) + pad = 16 bytes per pellet.
+    const tiles = pelletTiles();
+    this.pelletCount = tiles.length;
+    const pelletData = new Uint32Array(tiles.length * 4);
+    tiles.forEach((t, i) => {
+      pelletData[i * 4] = t.c;
+      pelletData[i * 4 + 1] = t.r;
+      pelletData[i * 4 + 2] = t.power ? 1 : 0;
+    });
+    const pelletList = createBufferWithData(gpu.device, 'pacman pellet list', pelletData, GPUBufferUsage.STORAGE);
 
     this.uniformBuffer = this.device.createBuffer({
       label: 'pacman uniforms',
@@ -439,7 +452,7 @@ export class PacmanRenderer {
         { binding: 1, resource: sampler },
         { binding: 2, resource: atlas.createView() },
         { binding: 3, resource: { buffer: buffers.agents } },
-        { binding: 4, resource: { buffer: buffers.pelletList } },
+        { binding: 4, resource: { buffer: pelletList } },
         { binding: 5, resource: { buffer: buffers.tileIndex } },
         { binding: 6, resource: { buffer: buffers.pathDist } },
       ],
@@ -448,7 +461,7 @@ export class PacmanRenderer {
     this.context.configure({ device: this.device, format: gpu.format, alphaMode: 'opaque' });
   }
 
-  static async create(canvas: HTMLCanvasElement, gpu: WebGPUState, buffers: PacmanBuffers): Promise<PacmanRenderer> {
+  static async create(canvas: HTMLCanvasElement, gpu: WebGPUState, buffers: CoreBuffers): Promise<PacmanRenderer> {
     return new PacmanRenderer(canvas, gpu, buffers, await buildAtlas(gpu.device));
   }
 

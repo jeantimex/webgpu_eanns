@@ -220,3 +220,132 @@ export function nextTournamentGeneration(
   for (let i = 0; i < Math.min(eliteCount, n); i++) next[i] = population[order[i]].slice();
   return next;
 }
+
+/**
+ * The track demo's GA, matching Unity's default configuration
+ * (EvolutionManager.cs:113-119: RemainderStochasticSampling + RandomRecombination
+ * + MutateAllButBestTwo), with blend/uniform crossover:
+ *
+ * 1. Remainder Stochastic Sampling calculates relative fitness = evaluation / avgEvaluation.
+ *    Genotypes with above-average evaluation get copies in the intermediate pool proportional
+ *    to their fitness, while lower/medium evaluation genotypes get fractional chances.
+ *    This preserves genetic diversity and prevents premature convergence / getting stuck at corners.
+ * 2. RandomRecombination preserves the top elites from the intermediate pool unmodified
+ *    and fills the rest of the population with crossover offspring of pool members.
+ * 3. Mutation hits all non-elite clones per-parameter (uniform +-amount).
+ *
+ * Dynamic elite scaling: once a car completes the track (maxFitness >= 0.95), the
+ * unmutated elite pool expands to 50% of the population, so a pack of successful
+ * cars finishes together while the rest optimize lap times.
+ */
+export function nextRemainderBlendGeneration(
+  population: Float64Array[],
+  fitnesses: ArrayLike<number>,
+  rng: Rng,
+): Float64Array[] {
+  const n = population.length;
+  const genomeSize = population[0].length;
+  // Sort indices descending by evaluation / fitness
+  const order = population.map((_, i) => i).sort((a, b) => fitnesses[b] - fitnesses[a]);
+
+  // Calculate average evaluation to get relative fitness (Fitness = evaluation / averageEvaluation)
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += fitnesses[i];
+  const avg = sum / n;
+
+  const intermediate: number[] = [];
+
+  if (avg > 1e-6) {
+    // Remainder Stochastic Sampling (Unity EvolutionManager.cs:245-270)
+    // 1. Integer portion: add floor(fitness) copies of each genotype
+    for (const idx of order) {
+      const relFitness = fitnesses[idx] / avg;
+      if (relFitness < 1) break; // Sorted, so subsequent cars also have relFitness < 1
+      const count = Math.floor(relFitness);
+      for (let c = 0; c < count; c++) {
+        intermediate.push(idx);
+      }
+    }
+
+    // 2. Remainder portion: add 1 copy with probability (fitness - floor(fitness))
+    for (const idx of order) {
+      const relFitness = fitnesses[idx] / avg;
+      const remainder = relFitness - Math.floor(relFitness);
+      if (rng() < remainder) {
+        intermediate.push(idx);
+      }
+    }
+  }
+
+  // Fallback if intermediate population has fewer than 2 members (e.g. all 0 fitness or flat)
+  if (intermediate.length < 2) {
+    for (const idx of order) {
+      if (!intermediate.includes(idx)) {
+        intermediate.push(idx);
+        if (intermediate.length >= 2) break;
+      }
+    }
+    while (intermediate.length < 2) {
+      intermediate.push(order[0] ?? 0);
+    }
+  }
+
+  const maxFitness = Number(fitnesses[order[0]] ?? 0);
+  const isTrackCompleted = maxFitness >= 0.95;
+  const numElites = isTrackCompleted ? Math.floor(n * 0.5) : Math.min(2, n);
+
+  const next: Float64Array[] = [];
+
+  // Fill unmutated elite slots from top intermediate performers
+  for (let i = 0; i < numElites; i++) {
+    const parentIdx = intermediate[i % intermediate.length];
+    next.push(population[parentIdx].slice());
+  }
+
+  // Fill remaining slots with blend/uniform crossover offspring: inherit successful
+  // features (steering angles, throttle control) from BOTH top-performing parents.
+  while (next.length < n) {
+    const i1 = Math.floor(rng() * intermediate.length);
+    let i2 = Math.floor(rng() * intermediate.length);
+    while (intermediate.length > 1 && i2 === i1) {
+      i2 = Math.floor(rng() * intermediate.length);
+    }
+    const p1 = population[intermediate[i1]];
+    const p2 = population[intermediate[i2]];
+    const o1 = new Float64Array(genomeSize);
+    const o2 = new Float64Array(genomeSize);
+    for (let k = 0; k < genomeSize; k++) {
+      if (rng() < 0.6) {
+        // Blend crossover: smooth interpolation between parent weights (-0.1 to 1.1 range)
+        const alpha = rng() * 1.2 - 0.1;
+        o1[k] = alpha * p1[k] + (1 - alpha) * p2[k];
+        o2[k] = (1 - alpha) * p1[k] + alpha * p2[k];
+      } else {
+        // Uniform crossover: swap weights between parents
+        if (rng() < 0.5) {
+          o1[k] = p1[k];
+          o2[k] = p2[k];
+        } else {
+          o1[k] = p2[k];
+          o2[k] = p1[k];
+        }
+      }
+    }
+    next.push(o1);
+    if (next.length < n) next.push(o2);
+  }
+
+  // Apply mutation ONLY to non-elite slots (from numElites to n - 1)
+  for (let i = numElites; i < n; i++) {
+    const p = isTrackCompleted ? 0.05 : 0.2;
+    const amount = isTrackCompleted ? 0.2 : 1.2;
+
+    for (let k = 0; k < genomeSize; k++) {
+      if (rng() < p) {
+        next[i][k] += rng() * (amount * 2) - amount;
+      }
+    }
+  }
+
+  return next;
+}

@@ -1,215 +1,183 @@
 import '../../style.css';
-import { currentSettings, persistMode, updateSetting, updateUrlParamLive } from '../../gui/controls_gui';
-import { createDemoSettingsPanel } from '../../ui/demoSettingsPanel';
-import { NetworkPanel } from '../../ui/networkPanel';
-import { requiredElement } from '../../utils/dom';
-import { initializeWebGPU } from '../../webgpu/utils';
-import { LEVEL_SECS, LEVEL_SECS_MAX, LEVEL_SECS_MIN, PACMAN_OUTPUT_LABELS } from './pacman_buffers';
-import { PacmanEvolution, type BestAgentSnapshot } from './pacman_evolution';
-import { loadPacmanModelFile, loadPacmanTestModel, loadSavedPacmanBest, savePacmanModel, savePacmanTestModel } from './pacman_model';
+import { startDemo, type Evolution } from '../../core';
+import { updateUrlParamLive } from '../../gui/controls_gui';
+import {
+  A,
+  AGENT_FLOATS,
+  EPISODES_PER_GENOME,
+  LEVEL_SECS,
+  LEVEL_SECS_MAX,
+  LEVEL_SECS_MIN,
+  PACMAN_OUTPUT_LABELS,
+} from './pacman_buffers';
+import { pacmanNetwork } from './pacman_net';
+import { pacmanControls, pacmanSim, pacmanState, pickShownAgent } from './pacman_sim';
 import { PacmanRenderer } from './pacman_renderer';
 
-const canvas = requiredElement<HTMLCanvasElement>('#webgpu-canvas');
-const message = requiredElement<HTMLDivElement>('#message');
+const rawLevelSecs = Number(new URLSearchParams(window.location.search).get('level'));
+const initialLevelSecs = Number.isFinite(rawLevelSecs) && rawLevelSecs > 0
+  ? Math.min(LEVEL_SECS_MAX, Math.max(LEVEL_SECS_MIN, Math.round(rawLevelSecs)))
+  : LEVEL_SECS;
 
-function showMessage(text: string): void {
-  console.log(text);
-  message.textContent = text;
-  message.classList.add('visible');
+function levelTimeLeft(states: Float32Array, shown: number): string {
+  const left = Math.max(0, pacmanState.levelSeconds - states[shown * AGENT_FLOATS + A.levelTicks] / 60);
+  return `${Math.ceil(left)}s`;
 }
 
-function showError(error: unknown): void {
-  console.error(error);
-  showMessage(error instanceof Error ? error.message : 'Unable to start WebGPU.');
-}
+/** Play mode starts frozen at the initial position; the first arrow key starts the game. */
+const play = {
+  waiting: true,
+  setup(evo: Evolution): void {
+    pacmanState.playMode = true;
+    evo.writeParams();
+  },
+  onKeydown(e: KeyboardEvent, evo: Evolution): void {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      play.waiting = true;
+      evo.resetDisplayAgent();
+      return;
+    }
+    let dir = -1;
+    if (e.key === 'ArrowUp' || e.code === 'KeyW') dir = 0;
+    else if (e.key === 'ArrowRight' || e.code === 'KeyD') dir = 3;
+    else if (e.key === 'ArrowDown' || e.code === 'KeyS') dir = 1;
+    else if (e.key === 'ArrowLeft' || e.code === 'KeyA') dir = 2;
 
-/** DOM overlay: Score/Lives/Dots/Level top-left, Generation bottom-left. */
-function createHud(): { update(best: BestAgentSnapshot, generation: number): void } {
-  const stats = document.createElement('div');
-  stats.className = 'hud hud-stats';
-  stats.style.color = '#f1f5f9'; // arcade-black background
-  const gen = document.createElement('div');
-  gen.className = 'hud hud-generation';
-  gen.style.color = '#f1f5f9';
-  document.body.append(stats, gen);
-  let lastStats = '';
-  let lastGen = -1;
-  return {
-    update(best, generation) {
-      const text = `Score:   ${best.score}\nDots:    ${best.dotsLeft}\nLevel:   ${best.level}\nPlaying: ${best.aliveCount}`;
-      if (text !== lastStats) {
-        stats.textContent = text;
-        lastStats = text;
+    if (dir >= 0) {
+      e.preventDefault();
+      play.waiting = false;
+      pacmanControls.setPlayerDesiredDir(evo, dir);
+      void evo.readStates().then((states) => {
+        if (pacmanSim.isAgentDone(states, evo.displayAgentIndex)) evo.resetDisplayAgent();
+      });
+    }
+  },
+};
+
+startDemo({
+  namespace: 'pacman',
+  network: pacmanNetwork,
+  simulation: pacmanSim,
+  episodes: EPISODES_PER_GENOME,
+  // Tournament selection (§3.2): 对于《吃豆人》这个问题，锦标赛选择的效果更好,
+  // because it purges the useless random strategies fast.
+  ga: {
+    selection: 'tournament',
+    tournamentSize: 3,
+    eliteFraction: 0.02,
+    crossoverRate: 0.8,
+    mutateRate: 0.05, // adaptive: pacmanSim.beforeGaStep drives it from here
+    mutateRange: 1,
+    resetShare: 0.5, // half resets (explore), half drift (let confident weights grow)
+    driftSigma: 0.5,
+    clamp: 8,
+  },
+  stepsPerSecond: 60, // the source engine's logic rate
+  maxStepsPerFrame: 240,
+  bodyClass: 'snake-layout',
+  hudColor: '#f1f5f9', // arcade-black background
+  play,
+
+  // Test mode replays agent 0 (a training slot running the injected genome),
+  // re-seeded on every restart so the sampled policy shows its full range.
+  testTick: (evo) => {
+    void evo.readStates().then((states) => {
+      if (pacmanSim.isAgentDone(states, 0)) {
+        pacmanState.replaySeed = (pacmanState.replaySeed + 1) >>> 0;
+        evo.resetAgent(0, pacmanState.replaySeed);
       }
-      if (generation !== lastGen) {
-        gen.textContent = `Generation: ${generation}`;
-        lastGen = generation;
-      }
-    },
-  };
-}
+    });
+  },
 
-async function main(): Promise<void> {
-  document.body.classList.add('snake-layout');
-  const gpu = await initializeWebGPU(canvas);
-  const settings = currentSettings();
-  let isTest = settings.mode === 'Test';
-  let noModelWarning = false;
-  const testModel = loadPacmanTestModel();
-  if (isTest && !testModel) {
-    isTest = false;
-    noModelWarning = true;
-    persistMode('Train');
-  }
+  createRenderer: async (canvas, gpu, evo) => {
+    const renderer = await PacmanRenderer.create(canvas, gpu, evo.buffers);
+    const startTime = performance.now();
+    return {
+      render: () => renderer.render((performance.now() - startTime) / 1000),
+      setBestIndex: (i) => renderer.setBestIndex(i),
+      setShowPelletPath: (on: boolean) => renderer.setShowPelletPath(on),
+      setShowGhostPath: (on: boolean) => renderer.setShowGhostPath(on),
+    };
+  },
 
-  const evolution = PacmanEvolution.init(gpu.device, isTest ? 1 : settings.population);
-  if (isTest) evolution.injectBest(testModel!);
-  const renderer = await PacmanRenderer.create(canvas, gpu, evolution.buffers);
-  const hud = createHud();
-  const networkPanel = new NetworkPanel(PacmanEvolution.topology, {
+  pickShownAgent,
+
+  hud: (evo, states, shown) => {
+    const o = shown * AGENT_FLOATS;
+    return (
+      `Score:   ${states[o + A.score]}\n` +
+      `Dots:    ${states[o + A.dotsLeft]}\n` +
+      `Level:   ${states[o + A.level]}\n` +
+      `Playing: ${evo.countAlive(states)}`
+    );
+  },
+
+  networkPanel: {
     variant: 'snake',
     outputLabels: PACMAN_OUTPUT_LABELS,
     onToggle: (collapsed) => document.body.classList.toggle('snake-panel-collapsed', collapsed),
-  });
+  },
 
-  const rawLevelSecs = Number(new URLSearchParams(window.location.search).get('level'));
-  const initialLevelSecs = Number.isFinite(rawLevelSecs) && rawLevelSecs > 0
-    ? Math.min(LEVEL_SECS_MAX, Math.max(LEVEL_SECS_MIN, Math.round(rawLevelSecs)))
-    : LEVEL_SECS;
-
-  const isPlayMode = settings.mode === 'Play';
-  evolution.setPlayMode(isPlayMode);
-  // Play mode starts frozen at the initial position; the first arrow key starts the game.
-  let waiting = isPlayMode;
-
-  if (isPlayMode) {
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space') {
-        e.preventDefault();
-        waiting = true;
-        evolution.resetDisplayAgent();
-        return;
-      }
-      let dir = -1;
-      if (e.key === 'ArrowUp' || e.code === 'KeyW') dir = 0;
-      else if (e.key === 'ArrowRight' || e.code === 'KeyD') dir = 3;
-      else if (e.key === 'ArrowDown' || e.code === 'KeyS') dir = 1;
-      else if (e.key === 'ArrowLeft' || e.code === 'KeyA') dir = 2;
-
-      if (dir >= 0) {
-        e.preventDefault();
-        waiting = false;
-        evolution.setPlayerDesiredDir(dir);
-        void evolution.readBestAgentState().then((best) => {
-          if (best.gameOver) evolution.resetDisplayAgent();
-        });
-      }
-    });
-  }
-  if (noModelWarning) {
-    showMessage('Test mode needs a model - starting in Train mode. Use "Load model file" to test one.');
-    setTimeout(() => message.classList.remove('visible'), 6000);
-  }
-
-  const controls = createDemoSettingsPanel(settings, {
-    onSaveModel: () => {
-      savePacmanModel(evolution.displayGenome(), evolution.bestMeta());
-    },
-    onLoadSavedBest: () => {
-      const saved = loadSavedPacmanBest();
-      if (!saved) {
-        showMessage('No saved best model found for Pac-Man.');
-        return;
-      }
-      savePacmanTestModel(saved.weights);
-      updateSetting('mode', 'Test');
-    },
-    onLoadModelFile: async (file) => {
-      try {
-        const weights = await loadPacmanModelFile(file);
-        savePacmanTestModel(weights);
-        updateSetting('mode', 'Test');
-      } catch (err) {
-        showError(err);
-      }
-    },
-  }, {
-    sliders: [
-      {
-        label: 'Level time',
-        min: LEVEL_SECS_MIN,
-        max: LEVEL_SECS_MAX,
-        step: 5,
-        initial: initialLevelSecs,
-        unit: 's',
-        onChange: (value: number) => {
-          evolution.setLevelSeconds(value);
-          updateUrlParamLive('level', value);
-        },
-      },
-    ],
-    // Debug overlays for the perception vector the network actually sees.
-    toggles: [
-      { label: 'Pellet BFS path', onChange: (on: boolean) => renderer.setShowPelletPath(on) },
-      { label: 'Ghost BFS path', onChange: (on: boolean) => renderer.setShowGhostPath(on) },
-    ],
-  });
-
-  // Fixed 60 Hz sim ticks (the source engine's logic rate) x sim speed.
-  let last = performance.now();
-  let acc = 0;
-  const startTime = last;
-  const loop = (now: number): void => {
-    acc += (Math.min(now - last, 100) / 1000) * 60 * controls.speed;
-    last = now;
-    const steps = Math.min(Math.floor(acc), 240);
-    acc -= steps;
-    if (steps > 0 && !waiting) evolution.substeps(steps);
-    if (isTest) {
-      void evolution.restartTestAgentIfDead();
-    } else if (!isPlayMode) {
-      void evolution.checkAndEvolve();
+  panelStats: (evo, shown, _inputs, states, mode) => {
+    const o = shown * AGENT_FLOATS;
+    const score = states[o + A.score];
+    const dots = states[o + A.dotsLeft];
+    const level = states[o + A.level];
+    const time = levelTimeLeft(states, shown);
+    const gameOver = states[o + A.gameOver] > 0.5;
+    if (mode === 'Play') {
+      return [
+        ['MODE', 'PLAY'],
+        ['SCORE', score],
+        ['DOTS', dots],
+        ['LEVEL', level],
+        ['TIME', time],
+        ['STATUS', play.waiting ? 'READY (Press Arrow Key)' : gameOver ? 'GAME OVER (Press Arrow Key)' : 'PLAYING'],
+      ];
     }
-    void evolution.readBestAgentState().then((best) => {
-      renderer.setBestIndex(best.index);
-      hud.update(best, isPlayMode || isTest ? 0 : evolution.generation);
-      networkPanel.draw(evolution.genomeAt(best.index), {
-        stats: isPlayMode
-          ? [
-              ['MODE', 'PLAY'],
-              ['SCORE', best.score],
-              ['DOTS', best.dotsLeft],
-              ['LEVEL', best.level],
-              ['TIME', `${Math.ceil(best.levelTimeLeft)}s`],
-              ['STATUS', waiting ? 'READY (Press Arrow Key)' : best.gameOver ? 'GAME OVER (Press Arrow Key)' : 'PLAYING'],
-            ]
-          : isTest
-            ? [
-                ['MODE', 'TEST'],
-                ['SCORE', best.score],
-                ['DOTS', best.dotsLeft],
-                ['LEVEL', best.level],
-                ['TIME', `${Math.ceil(best.levelTimeLeft)}s`],
-                ['STATUS', best.gameOver ? 'RESTARTING' : 'RUNNING'],
-              ]
-          : [
-              ['GEN', evolution.generation],
-              ['MUT', `${(evolution.gaState().mutateRate * 100).toFixed(0)}%`],
-              ['SCORE', best.score],
-              ['BEST SCORE', best.bestScore],
-              ['BEST LEVEL', best.bestLevel],
-              ['BEST GEN', best.bestGeneration],
-              ['DOTS', best.dotsLeft],
-              ['LEVEL', best.level],
-              ['TIME', `${Math.ceil(best.levelTimeLeft)}s`],
-              ['POP LEFT', best.aliveCount],
-            ],
-      });
-    });
-    renderer.render((now - startTime) / 1000);
-    requestAnimationFrame(loop);
-  };
-  loop(performance.now());
-}
+    if (mode === 'Test') {
+      return [
+        ['MODE', 'TEST'],
+        ['SCORE', score],
+        ['DOTS', dots],
+        ['LEVEL', level],
+        ['TIME', time],
+        ['STATUS', gameOver ? 'RESTARTING' : 'RUNNING'],
+      ];
+    }
+    return [
+      ['GEN', evo.generation],
+      ['MUT', `${(pacmanState.mutateRate * 100).toFixed(0)}%`],
+      ['SCORE', score],
+      ['BEST SCORE', pacmanState.bestScore],
+      ['BEST LEVEL', pacmanState.highestLevel],
+      ['BEST GEN', evo.bestGeneration],
+      ['DOTS', dots],
+      ['LEVEL', level],
+      ['TIME', time],
+      ['POP LEFT', evo.countAlive(states)],
+    ];
+  },
 
-main().catch(showError);
+  sliders: (evo) => [
+    {
+      label: 'Level time',
+      min: LEVEL_SECS_MIN,
+      max: LEVEL_SECS_MAX,
+      step: 5,
+      initial: initialLevelSecs,
+      unit: 's',
+      onChange: (value) => {
+        pacmanControls.setLevelSeconds(evo, value);
+        updateUrlParamLive('level', value);
+      },
+    },
+  ],
+
+  // Debug overlays for the perception vector the network actually sees.
+  toggles: (_evo, renderer) => [
+    { label: 'Pellet BFS path', onChange: (on) => renderer.setShowPelletPath(on) },
+    { label: 'Ghost BFS path', onChange: (on) => renderer.setShowGhostPath(on) },
+  ],
+});

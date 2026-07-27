@@ -1,9 +1,7 @@
-import { createBufferWithData } from '../../webgpu/utils';
-
-/** Genome layout [5 -> 8 -> 1], layer-major row-major with bias rows last: 5x8 + 8 + 8x1 + 1. */
-export const FLAPPY_GENOME_SIZE = 57;
 /** Bird state, 8 f32 = 32 bytes: pos(2), velY, alive(u32), score(u32), fitness, jumpOutput, pad. */
 export const BIRD_FLOATS = 8;
+/** Pipe slots in the GPU pipe buffer; oldest pipes are dropped past this. */
+export const MAX_PIPES = 16;
 
 // World constants, derived from the source repo's image assets (assets/*.png).
 // Mirrored as literals in flappy.wgsl.ts — keep the two in sync.
@@ -28,15 +26,6 @@ export interface PipeState {
   width: number;
 }
 
-export interface FlappyBuffers {
-  params: GPUBuffer;
-  genomes: GPUBuffer;
-  birds: GPUBuffer;
-  pipes: GPUBuffer;
-  readback: GPUBuffer;
-  maxPipes: number;
-}
-
 /** All birds at the start pose, alive, score 0. */
 export function initialBirdStates(count: number): Float32Array<ArrayBuffer> {
   const states = new Float32Array(count * BIRD_FLOATS);
@@ -50,48 +39,7 @@ export function initialBirdStates(count: number): Float32Array<ArrayBuffer> {
   return states;
 }
 
-export function createFlappyBuffers(device: GPUDevice, populationSize: number, maxPipes = 16): FlappyBuffers {
-  // SimParams uniform: birdCount, pipeCount (u32) = 8 bytes, padded to 16.
-  const paramsData = new ArrayBuffer(16);
-  new Uint32Array(paramsData)[0] = populationSize;
-
-  const genomes = device.createBuffer({
-    label: 'flappy genomes',
-    size: populationSize * FLAPPY_GENOME_SIZE * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  const birdBytes = populationSize * BIRD_FLOATS * 4;
-  const birds = device.createBuffer({
-    label: 'flappy birds',
-    size: birdBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-
-  const readback = device.createBuffer({
-    label: 'flappy readback',
-    size: birdBytes,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-
-  // Pipe struct: x, topY, bottomY, width (f32) = 16 bytes per pipe.
-  const pipes = device.createBuffer({
-    label: 'flappy pipes',
-    size: Math.max(1, maxPipes) * 16,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  return {
-    params: createBufferWithData(device, 'flappy params', new Uint32Array(paramsData), GPUBufferUsage.UNIFORM),
-    genomes,
-    birds,
-    pipes,
-    readback,
-    maxPipes,
-  };
-}
-
-export function uploadFlappyPipes(device: GPUDevice, buffers: FlappyBuffers, pipesList: PipeState[]): void {
+export function uploadFlappyPipes(device: GPUDevice, pipes: GPUBuffer, pipesList: PipeState[]): void {
   if (pipesList.length === 0) return;
   const flat = new Float32Array(pipesList.length * 4);
   for (let i = 0; i < pipesList.length; i++) {
@@ -100,5 +48,5 @@ export function uploadFlappyPipes(device: GPUDevice, buffers: FlappyBuffers, pip
     flat[i * 4 + 2] = pipesList[i].bottomY;
     flat[i * 4 + 3] = pipesList[i].width;
   }
-  device.queue.writeBuffer(buffers.pipes, 0, flat);
+  device.queue.writeBuffer(pipes, 0, flat);
 }

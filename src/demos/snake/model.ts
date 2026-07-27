@@ -1,20 +1,7 @@
-import { SNAKE_GENOME_SIZE, SNAKE_TOPOLOGY } from './snake_buffers';
+import { snakeNetwork } from './snake_net';
 
-export interface SnakeModel {
-  topology: number[];
-  weights: number[];
-  meta?: { generation?: number; eval?: number; score?: number };
-}
-
-const STORAGE_KEY = 'eanns:best:snake';
-const TEST_KEY = 'eanns:testModel:snake';
-
-function validateWeights(weights: unknown): Float64Array {
-  if (!Array.isArray(weights) || weights.length !== SNAKE_GENOME_SIZE || !weights.every((w) => Number.isFinite(w))) {
-    throw new Error(`Snake model must contain exactly ${SNAKE_GENOME_SIZE} finite weights.`);
-  }
-  return Float64Array.from(weights as number[]);
-}
+/** Parser for CodeBullet's SnakeAI CSV exports (L0/L1/L2 columns), kept as the
+ *  legacy format accepted by "Load model file" alongside the JSON format. */
 
 function parseCsvLine(line: string): string[] {
   const out: string[] = [];
@@ -51,7 +38,7 @@ function snakeAiLayerToGenome(values: number[], rows: number, cols: number): Flo
   return flat;
 }
 
-function parseSnakeAiCsv(text: string): Float64Array {
+export function parseSnakeAiCsv(text: string): Float64Array {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   const header = parseCsvLine(lines[0]);
   const l0 = header.indexOf('L0');
@@ -73,72 +60,11 @@ function parseSnakeAiCsv(text: string): Float64Array {
     snakeAiLayerToGenome(columns[1], 16, 17),
     snakeAiLayerToGenome(columns[2], 4, 17),
   ];
-  const genome = new Float64Array(SNAKE_GENOME_SIZE);
+  const genome = new Float64Array(snakeNetwork.genomeSize);
   let offset = 0;
   for (const layer of layers) {
     genome.set(layer, offset);
     offset += layer.length;
   }
   return genome;
-}
-
-export function parseSnakeModelText(text: string): Float64Array {
-  if (!text.trimStart().startsWith('{')) return parseSnakeAiCsv(text);
-  const model = JSON.parse(text) as SnakeModel;
-  if (JSON.stringify(model.topology) !== JSON.stringify([...SNAKE_TOPOLOGY])) {
-    throw new Error(`Unsupported Snake topology [${model.topology}], expected [${[...SNAKE_TOPOLOGY]}].`);
-  }
-  return validateWeights(model.weights);
-}
-
-export function saveSnakeModel(weights: Float64Array, meta: SnakeModel['meta']): void {
-  const model: SnakeModel = { topology: [...SNAKE_TOPOLOGY], weights: [...weights], meta };
-  const url = URL.createObjectURL(new Blob([JSON.stringify(model, null, 2)], { type: 'application/json' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `eanns-snake-gen${meta?.generation ?? 0}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-export async function loadSnakeModelFile(file: File): Promise<Float64Array> {
-  return parseSnakeModelText(await file.text());
-}
-
-export function autosaveSnakeBest(weights: Float64Array, generation: number, eval_: number, score: number): void {
-  const saved = loadSavedSnakeBest();
-  if (saved && saved.eval > eval_) return;
-  const model: SnakeModel = { topology: [...SNAKE_TOPOLOGY], weights: [...weights], meta: { generation, eval: eval_, score } };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(model));
-}
-
-export function loadSavedSnakeBest(): { weights: Float64Array; generation: number; eval: number; score: number } | null {
-  const text = localStorage.getItem(STORAGE_KEY);
-  if (!text) return null;
-  try {
-    const model = JSON.parse(text) as SnakeModel;
-    return {
-      weights: validateWeights(model.weights),
-      generation: model.meta?.generation ?? 0,
-      eval: model.meta?.eval ?? 0,
-      score: model.meta?.score ?? 0,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function saveSnakeTestModel(weights: Float64Array): void {
-  const model: SnakeModel = { topology: [...SNAKE_TOPOLOGY], weights: [...weights] };
-  localStorage.setItem(TEST_KEY, JSON.stringify(model));
-}
-
-export function loadSnakeTestModel(): Float64Array | null {
-  const text = localStorage.getItem(TEST_KEY);
-  if (!text) return null;
-  try {
-    return validateWeights((JSON.parse(text) as SnakeModel).weights);
-  } catch {
-    return null;
-  }
 }

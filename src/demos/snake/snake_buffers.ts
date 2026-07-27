@@ -1,10 +1,3 @@
-import { createBufferWithData } from '../../webgpu/utils';
-
-/** Genome layout [24 -> 16 -> 16 -> 4] (SnakeAI), layer-major row-major with bias rows last: 25x16 + 17x16 + 17x4. */
-export const SNAKE_GENOME_SIZE = 740;
-/** Network topology, shared by the GA crossover and the network panel. */
-export const SNAKE_TOPOLOGY = [24, 16, 16, 4] as const;
-
 /** SnakeAI's playable board is 38x38 cells; world units are cells. */
 export const GRID = 38;
 export const CELLS = GRID * GRID;
@@ -38,13 +31,6 @@ export const LIFE_START = 200; // SnakeAI move budget: starting moves
 export const LIFE_PER_APPLE = 100; // moves gained per apple
 export const LIFE_MAX = 500; // budget cap
 export const MAX_MOVES = 10000; // hard cap per game
-
-export interface SnakeBuffers {
-  params: GPUBuffer;
-  genomes: GPUBuffer;
-  agents: GPUBuffer;
-  readback: GPUBuffer;
-}
 
 /**
  * All agents: length-3 snake centered on the board (SnakeAI's start);
@@ -89,36 +75,4 @@ export function initialAgentStates(count: number, seedOffset = 0): Float32Array<
     states[o + A.appleY] = ay;
   }
   return states;
-}
-
-export function createSnakeBuffers(device: GPUDevice, populationSize: number): SnakeBuffers {
-  // SimParams uniform: agentCount (u32) = 4 bytes, padded to 16.
-  const paramsData = new ArrayBuffer(16);
-  new Uint32Array(paramsData)[0] = populationSize;
-
-  const genomes = device.createBuffer({
-    label: 'snake genomes',
-    size: populationSize * SNAKE_GENOME_SIZE * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  const agentBytes = populationSize * AGENT_FLOATS * 4;
-  const agents = device.createBuffer({
-    label: 'snake agents',
-    size: agentBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-
-  const readback = device.createBuffer({
-    label: 'snake readback',
-    size: agentBytes,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-
-  return {
-    params: createBufferWithData(device, 'snake params', new Uint32Array(paramsData), GPUBufferUsage.UNIFORM),
-    genomes,
-    agents,
-    readback,
-  };
 }

@@ -1,6 +1,5 @@
-import { createBufferWithData } from '../../webgpu/utils';
 import { episodeSeed } from '../../utils/evaluation';
-import { mazeGraph, mazeWallBits, pelletMaskInit, pelletTiles } from './maze';
+import { pelletMaskInit } from './maze';
 
 /**
  * Network shape from the EANN-Pacman writeup (§2.2): a shallow feedforward net,
@@ -167,22 +166,6 @@ export const EPISODES_PER_GENOME = 6;
 export const STALL_SECS = 8; // no pellet for this long ends the game (anti standstill)
 export const FRUIT_SECS = 10; // cherry lifetime, spawns at 70 and 170 dots eaten (100 pts)
 
-export interface PacmanBuffers {
-  params: GPUBuffer;
-  genomes: GPUBuffer;
-  agents: GPUBuffer;
-  mazeBits: GPUBuffer;
-  initPellets: GPUBuffer;
-  pelletList: GPUBuffer;
-  /** Tile -> compact walkable index (i32, -1 for walls and the ghost house). */
-  tileIndex: GPUBuffer;
-  /** All-pairs maze step counts between walkable tiles, u8 packed 4 per u32. */
-  pathDist: GPUBuffer;
-  readback: GPUBuffer;
-  pelletCount: number;
-  totalAgents: number;
-}
-
 /**
  * All agents at the arcade start state (positions in the repo's tile coords).
  *
@@ -216,62 +199,4 @@ export function initialAgentStates(count: number, seed = 1, episodes = 1): Float
     new Uint32Array(states.buffer, o * 4 + A.pellets * 4, 28).set(pellets);
   }
   return states;
-}
-
-export function createPacmanBuffers(device: GPUDevice, populationSize: number, episodes = 1): PacmanBuffers {
-  // populationSize genomes x episodes, plus one trailing replay/display agent.
-  const totalAgents = populationSize * episodes + 1;
-  // SimParams uniform: agentCount, episodes, playMode, rngSeed (u32) then the
-  // per-generation environment jitter of §5.1 as two f32; padded to 32 bytes.
-  const paramsData = new ArrayBuffer(48);
-  new Uint32Array(paramsData).set([totalAgents, episodes]);
-  new Float32Array(paramsData, 16).set([1, 1]);
-  new Float32Array(paramsData, 24).set([1]);
-  new Uint32Array(paramsData, 28).set([LEVEL_SECS * 60]);
-  new Float32Array(paramsData, 32).set([GHOST_CHAOS]);
-
-  // One genome per individual plus the display slot — episodes share a genome.
-  const genomes = device.createBuffer({
-    label: 'pacman genomes',
-    size: (populationSize + 1) * PACMAN_GENOME_SIZE * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  const agentBytes = totalAgents * AGENT_FLOATS * 4;
-  const agents = device.createBuffer({
-    label: 'pacman agents',
-    size: agentBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-
-  const readback = device.createBuffer({
-    label: 'pacman readback',
-    size: agentBytes,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-
-  // Renderer pellet list: c, r, power (u32) + pad = 16 bytes per pellet.
-  const tiles = pelletTiles();
-  const pelletData = new Uint32Array(tiles.length * 4);
-  tiles.forEach((t, i) => {
-    pelletData[i * 4] = t.c;
-    pelletData[i * 4 + 1] = t.r;
-    pelletData[i * 4 + 2] = t.power ? 1 : 0;
-  });
-
-  const graph = mazeGraph();
-
-  return {
-    params: createBufferWithData(device, 'pacman params', new Uint32Array(paramsData), GPUBufferUsage.UNIFORM),
-    genomes,
-    agents,
-    mazeBits: createBufferWithData(device, 'pacman maze bits', mazeWallBits(), GPUBufferUsage.STORAGE),
-    initPellets: createBufferWithData(device, 'pacman init pellets', pelletMaskInit(), GPUBufferUsage.STORAGE),
-    pelletList: createBufferWithData(device, 'pacman pellet list', pelletData, GPUBufferUsage.STORAGE),
-    tileIndex: createBufferWithData(device, 'pacman tile index', graph.tileIndex, GPUBufferUsage.STORAGE),
-    pathDist: createBufferWithData(device, 'pacman path distances', graph.pathDist, GPUBufferUsage.STORAGE),
-    readback,
-    pelletCount: tiles.length,
-    totalAgents,
-  };
 }
